@@ -5,16 +5,21 @@ import com.example.tokenservice.dto.TokenRequest;
 import com.example.tokenservice.dto.TokenResponse;
 import com.example.tokenservice.dto.ValidationResult;
 import com.example.tokenservice.service.TokenService;
-import jakarta.validation.Valid;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
+
+import javax.validation.Valid;
 
 @RestController
 @RequestMapping("/api/token")
-@RequiredArgsConstructor
 public class TokenController {
     
     private final TokenService tokenService;
+    
+    @Autowired
+    public TokenController(TokenService tokenService) {
+        this.tokenService = tokenService;
+    }
     
     @PostMapping("/generate")
     public ApiResponse<TokenResponse> generateToken(@Valid @RequestBody TokenRequest request) {

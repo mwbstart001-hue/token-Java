@@ -5,9 +5,9 @@ import com.example.tokenservice.dto.TokenResponse;
 import com.example.tokenservice.dto.ValidationResult;
 import io.jsonwebtoken.*;
 import io.jsonwebtoken.security.Keys;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import javax.crypto.SecretKey;
@@ -15,22 +15,26 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Date;
-import java.util.concurrent.TimeUnit;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class TokenService {
     
     private final JwtConfig jwtConfig;
-    private final RedisTemplate<String, Object> redisTemplate;
+    private final SecretKey signingKey;
     
-    private static final String TOKEN_BLACKLIST_PREFIX = "token:blacklist:";
-    private static final String USER_TOKEN_PREFIX = "token:user:";
+    private final Map<String, String> userTokenMap = new ConcurrentHashMap<>();
+    private final Map<String, Long> tokenBlacklist = new ConcurrentHashMap<>();
+    private final Map<String, Long> tokenExpiryMap = new ConcurrentHashMap<>();
     
-    private SecretKey getSigningKey() {
-        byte[] keyBytes = jwtConfig.getSecret().getBytes(StandardCharsets.UTF_8);
-        return Keys.hmacShaKeyFor(keyBytes);
+    @Autowired
+    public TokenService(JwtConfig jwtConfig) {
+        this.jwtConfig = jwtConfig;
+        this.signingKey = Keys.hmacShaKeyFor(
+                jwtConfig.getSecret().getBytes(StandardCharsets.UTF_8)
+        );
     }
     
     public TokenResponse generateToken(String userId, String username) {
@@ -38,15 +42,15 @@ public class TokenService {
         Date expiration = new Date(now.getTime() + jwtConfig.getExpiration());
         
         String token = Jwts.builder()
-                .subject(userId)
+                .setSubject(userId)
                 .claim("username", username)
-                .issuedAt(now)
-                .expiration(expiration)
-                .signWith(getSigningKey())
+                .setIssuedAt(now)
+                .setExpiration(expiration)
+                .signWith(signingKey, SignatureAlgorithm.HS256)
                 .compact();
         
-        String userTokenKey = USER_TOKEN_PREFIX + userId;
-        redisTemplate.opsForValue().set(userTokenKey, token, jwtConfig.getExpiration(), TimeUnit.MILLISECONDS);
+        userTokenMap.put(userId, token);
+        tokenExpiryMap.put(token, expiration.getTime());
         
         return TokenResponse.builder()
                 .token(token)
@@ -58,25 +62,23 @@ public class TokenService {
     
     public ValidationResult validateToken(String token) {
         try {
-            String blacklistKey = TOKEN_BLACKLIST_PREFIX + token;
-            if (Boolean.TRUE.equals(redisTemplate.hasKey(blacklistKey))) {
+            if (tokenBlacklist.containsKey(token)) {
                 return ValidationResult.builder()
                         .valid(false)
                         .message("Token 已作废")
                         .build();
             }
             
-            Claims claims = Jwts.parser()
-                    .verifyWith(getSigningKey())
+            Claims claims = Jwts.parserBuilder()
+                    .setSigningKey(signingKey)
                     .build()
-                    .parseSignedClaims(token)
-                    .getPayload();
+                    .parseClaimsJws(token)
+                    .getBody();
             
             String userId = claims.getSubject();
             
-            String userTokenKey = USER_TOKEN_PREFIX + userId;
-            Object storedToken = redisTemplate.opsForValue().get(userTokenKey);
-            if (storedToken == null || !token.equals(storedToken.toString())) {
+            String storedToken = userTokenMap.get(userId);
+            if (storedToken == null || !token.equals(storedToken)) {
                 return ValidationResult.builder()
                         .valid(false)
                         .message("Token 已失效")
@@ -107,11 +109,17 @@ public class TokenService {
                     .valid(false)
                     .message("无效的 Token 格式")
                     .build();
-        } catch (SecurityException e) {
+        } catch (SignatureException e) {
             log.warn("Token 签名验证失败: {}", e.getMessage());
             return ValidationResult.builder()
                     .valid(false)
                     .message("Token 签名验证失败")
+                    .build();
+        } catch (IllegalArgumentException e) {
+            log.warn("Token 为空或无效: {}", e.getMessage());
+            return ValidationResult.builder()
+                    .valid(false)
+                    .message("Token 为空或无效")
                     .build();
         } catch (Exception e) {
             log.error("Token 验证失败: {}", e.getMessage());
@@ -124,22 +132,20 @@ public class TokenService {
     
     public boolean revokeToken(String token) {
         try {
-            Claims claims = Jwts.parser()
-                    .verifyWith(getSigningKey())
+            Claims claims = Jwts.parserBuilder()
+                    .setSigningKey(signingKey)
                     .build()
-                    .parseSignedClaims(token)
-                    .getPayload();
+                    .parseClaimsJws(token)
+                    .getBody();
             
             String userId = claims.getSubject();
             Date expiration = claims.getExpiration();
             long ttl = expiration.getTime() - System.currentTimeMillis();
             
             if (ttl > 0) {
-                String blacklistKey = TOKEN_BLACKLIST_PREFIX + token;
-                redisTemplate.opsForValue().set(blacklistKey, true, ttl, TimeUnit.MILLISECONDS);
-                
-                String userTokenKey = USER_TOKEN_PREFIX + userId;
-                redisTemplate.delete(userTokenKey);
+                tokenBlacklist.put(token, expiration.getTime());
+                userTokenMap.remove(userId);
+                tokenExpiryMap.remove(token);
                 
                 log.info("Token 已作废, userId: {}", userId);
                 return true;
@@ -153,13 +159,16 @@ public class TokenService {
     }
     
     public boolean revokeTokenByUserId(String userId) {
-        String userTokenKey = USER_TOKEN_PREFIX + userId;
-        Object token = redisTemplate.opsForValue().get(userTokenKey);
+        String token = userTokenMap.get(userId);
         
         if (token != null) {
-            String blacklistKey = TOKEN_BLACKLIST_PREFIX + token.toString();
-            redisTemplate.opsForValue().set(blacklistKey, true, jwtConfig.getExpiration(), TimeUnit.MILLISECONDS);
-            redisTemplate.delete(userTokenKey);
+            Long expiryTime = tokenExpiryMap.get(token);
+            if (expiryTime != null && expiryTime > System.currentTimeMillis()) {
+                tokenBlacklist.put(token, expiryTime);
+            }
+            userTokenMap.remove(userId);
+            tokenExpiryMap.remove(token);
+            
             log.info("用户 {} 的 Token 已作废", userId);
             return true;
         }
@@ -168,10 +177,30 @@ public class TokenService {
     }
     
     public Claims parseToken(String token) {
-        return Jwts.parser()
-                .verifyWith(getSigningKey())
+        return Jwts.parserBuilder()
+                .setSigningKey(signingKey)
                 .build()
-                .parseSignedClaims(token)
-                .getPayload();
+                .parseClaimsJws(token)
+                .getBody();
+    }
+    
+    @Scheduled(fixedRate = 60000)
+    public void cleanExpiredTokens() {
+        long now = System.currentTimeMillis();
+        
+        tokenBlacklist.entrySet().removeIf(entry -> entry.getValue() <= now);
+        
+        tokenExpiryMap.entrySet().removeIf(entry -> {
+            if (entry.getValue() <= now) {
+                userTokenMap.values().removeIf(v -> v.equals(entry.getKey()));
+                return true;
+            }
+            return false;
+        });
+        
+        if (log.isDebugEnabled()) {
+            log.debug("已清理过期 Token, 当前有效用户数: {}, 黑名单数: {}", 
+                    userTokenMap.size(), tokenBlacklist.size());
+        }
     }
 }
