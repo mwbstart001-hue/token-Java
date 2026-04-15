@@ -3,12 +3,14 @@ package com.example.tokenservice.controller;
 import com.example.tokenservice.common.ResultCode;
 import com.example.tokenservice.common.TraceContext;
 import com.example.tokenservice.dto.*;
+import com.example.tokenservice.ratelimit.RateLimitService;
 import com.example.tokenservice.service.TokenService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 
+import javax.servlet.http.HttpServletRequest;
 import javax.validation.Valid;
 
 @Slf4j
@@ -17,17 +19,31 @@ import javax.validation.Valid;
 public class TokenController {
     
     private final TokenService tokenService;
+    private final RateLimitService rateLimitService;
+    
+    private static final int LOGIN_LIMIT = 5;
+    private static final int REFRESH_LIMIT = 10;
+    private static final int VALIDATE_LIMIT = 20;
+    private static final long WINDOW_MS = 60000;
     
     @Autowired
-    public TokenController(TokenService tokenService) {
+    public TokenController(TokenService tokenService, RateLimitService rateLimitService) {
         this.tokenService = tokenService;
+        this.rateLimitService = rateLimitService;
     }
     
     @PostMapping("/login")
-    public ApiResponse<TokenPair> login(@Valid @RequestBody TokenRequest request) {
+    public ApiResponse<TokenPair> login(@Valid @RequestBody TokenRequest request, HttpServletRequest httpRequest) {
         String traceId = TraceContext.getTraceId();
+        String clientIp = getClientIp(httpRequest);
         
-        log.info("[{}] Login request - userId: {}", traceId, request.getUserId());
+        String rateLimitKey = "login:" + clientIp;
+        if (!rateLimitService.tryAcquire(rateLimitKey, LOGIN_LIMIT, WINDOW_MS)) {
+            log.warn("[{}] Login rate limit exceeded for IP: {}", traceId, clientIp);
+            return ApiResponse.error(429, "请求过于频繁，请稍后重试");
+        }
+        
+        log.info("[{}] Login request - userId: {}, IP: {}", traceId, request.getUserId(), clientIp);
         
         TokenPair tokenPair = tokenService.generateTokenPair(
                 request.getUserId(),
@@ -41,10 +57,17 @@ public class TokenController {
     
     @PostMapping("/generate")
     @Deprecated
-    public ApiResponse<TokenResponse> generateToken(@Valid @RequestBody TokenRequest request) {
+    public ApiResponse<TokenResponse> generateToken(@Valid @RequestBody TokenRequest request, HttpServletRequest httpRequest) {
         String traceId = TraceContext.getTraceId();
+        String clientIp = getClientIp(httpRequest);
         
-        log.info("[{}] Generate token request - userId: {}", traceId, request.getUserId());
+        String rateLimitKey = "generate:" + clientIp;
+        if (!rateLimitService.tryAcquire(rateLimitKey, LOGIN_LIMIT, WINDOW_MS)) {
+            log.warn("[{}] Generate token rate limit exceeded for IP: {}", traceId, clientIp);
+            return ApiResponse.error(429, "请求过于频繁，请稍后重试");
+        }
+        
+        log.info("[{}] Generate token request - userId: {}, IP: {}", traceId, request.getUserId(), clientIp);
         
         TokenResponse tokenResponse = tokenService.generateToken(
                 request.getUserId(),
@@ -57,10 +80,17 @@ public class TokenController {
     }
     
     @PostMapping("/refresh")
-    public ApiResponse<TokenPair> refreshToken(@Valid @RequestBody RefreshTokenRequest request) {
+    public ApiResponse<TokenPair> refreshToken(@Valid @RequestBody RefreshTokenRequest request, HttpServletRequest httpRequest) {
         String traceId = TraceContext.getTraceId();
+        String clientIp = getClientIp(httpRequest);
         
-        log.info("[{}] Refresh token request", traceId);
+        String rateLimitKey = "refresh:" + clientIp;
+        if (!rateLimitService.tryAcquire(rateLimitKey, REFRESH_LIMIT, WINDOW_MS)) {
+            log.warn("[{}] Refresh token rate limit exceeded for IP: {}", traceId, clientIp);
+            return ApiResponse.error(429, "请求过于频繁，请稍后重试");
+        }
+        
+        log.info("[{}] Refresh token request, IP: {}", traceId, clientIp);
         
         try {
             TokenPair tokenPair = tokenService.refreshToken(request.getRefreshToken());
@@ -74,21 +104,29 @@ public class TokenController {
     
     @PostMapping("/validate")
     public ApiResponse<ValidationResult> validateToken(
-            @RequestHeader(value = "Authorization", required = false) String authorization) {
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            HttpServletRequest httpRequest) {
         
         String traceId = TraceContext.getTraceId();
+        String clientIp = getClientIp(httpRequest);
+        
+        String rateLimitKey = "validate:" + clientIp;
+        if (!rateLimitService.tryAcquire(rateLimitKey, VALIDATE_LIMIT, WINDOW_MS)) {
+            log.warn("[{}] Validate token rate limit exceeded for IP: {}", traceId, clientIp);
+            return ApiResponse.error(429, "请求过于频繁，请稍后重试");
+        }
         
         String token = extractToken(authorization);
         
         if (!StringUtils.hasText(token)) {
-            log.warn("[{}] Validate token request - missing token", traceId);
+            log.warn("[{}] Validate token request - missing token, IP: {}", traceId, clientIp);
             return ApiResponse.error(
                     ResultCode.TOKEN_INVALID.getCode(),
                     "缺少 Token"
             );
         }
         
-        log.info("[{}] Validate token request", traceId);
+        log.info("[{}] Validate token request, IP: {}", traceId, clientIp);
         
         ValidationResult result = tokenService.validateToken(token);
         
@@ -97,21 +135,23 @@ public class TokenController {
     
     @PostMapping("/revoke")
     public ApiResponse<Boolean> revokeToken(
-            @RequestHeader(value = "Authorization", required = false) String authorization) {
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            HttpServletRequest httpRequest) {
         
         String traceId = TraceContext.getTraceId();
+        String clientIp = getClientIp(httpRequest);
         
         String token = extractToken(authorization);
         
         if (!StringUtils.hasText(token)) {
-            log.warn("[{}] Revoke token request - missing token", traceId);
+            log.warn("[{}] Revoke token request - missing token, IP: {}", traceId, clientIp);
             return ApiResponse.error(
                     ResultCode.BAD_REQUEST.getCode(),
                     "缺少 Token"
             );
         }
         
-        log.info("[{}] Revoke token request", traceId);
+        log.info("[{}] Revoke token request, IP: {}", traceId, clientIp);
         
         boolean revoked = tokenService.revokeToken(token);
         
@@ -127,21 +167,23 @@ public class TokenController {
     
     @PostMapping("/logout")
     public ApiResponse<Boolean> logout(
-            @RequestHeader(value = "Authorization", required = false) String authorization) {
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            HttpServletRequest httpRequest) {
         
         String traceId = TraceContext.getTraceId();
+        String clientIp = getClientIp(httpRequest);
         
         String token = extractToken(authorization);
         
         if (!StringUtils.hasText(token)) {
-            log.warn("[{}] Logout request - missing token", traceId);
+            log.warn("[{}] Logout request - missing token, IP: {}", traceId, clientIp);
             return ApiResponse.error(
                     ResultCode.BAD_REQUEST.getCode(),
                     "缺少 Token"
             );
         }
         
-        log.info("[{}] Logout request", traceId);
+        log.info("[{}] Logout request, IP: {}", traceId, clientIp);
         
         try {
             tokenService.revokeToken(token);
@@ -157,18 +199,19 @@ public class TokenController {
     }
     
     @PostMapping("/revoke/user/{userId}")
-    public ApiResponse<Boolean> revokeTokenByUserId(@PathVariable String userId) {
+    public ApiResponse<Boolean> revokeTokenByUserId(@PathVariable String userId, HttpServletRequest httpRequest) {
         String traceId = TraceContext.getTraceId();
+        String clientIp = getClientIp(httpRequest);
         
         if (!StringUtils.hasText(userId)) {
-            log.warn("[{}] Revoke token by userId request - missing userId", traceId);
+            log.warn("[{}] Revoke token by userId request - missing userId, IP: {}", traceId, clientIp);
             return ApiResponse.error(
                     ResultCode.BAD_REQUEST.getCode(),
                     "缺少用户 ID"
             );
         }
         
-        log.info("[{}] Revoke token by userId: {}", traceId, userId);
+        log.info("[{}] Revoke token by userId: {}, IP: {}", traceId, userId, clientIp);
         
         boolean revoked = tokenService.revokeTokenByUserId(userId);
         
@@ -192,5 +235,25 @@ public class TokenController {
         }
         
         return authorization;
+    }
+    
+    private String getClientIp(HttpServletRequest request) {
+        String ip = request.getHeader("X-Forwarded-For");
+        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
+            ip = request.getHeader("Proxy-Client-IP");
+        }
+        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
+            ip = request.getHeader("WL-Proxy-Client-IP");
+        }
+        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
+            ip = request.getHeader("HTTP_CLIENT_IP");
+        }
+        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
+            ip = request.getHeader("HTTP_X_FORWARDED_FOR");
+        }
+        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
+            ip = request.getRemoteAddr();
+        }
+        return ip;
     }
 }
