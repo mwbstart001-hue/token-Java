@@ -5,6 +5,7 @@ import com.example.tokenservice.config.JwtConfig;
 import com.example.tokenservice.dto.TokenPair;
 import com.example.tokenservice.dto.TokenResponse;
 import com.example.tokenservice.dto.ValidationResult;
+import com.example.tokenservice.lock.DistributedLock;
 import com.example.tokenservice.store.TokenStore;
 import io.jsonwebtoken.*;
 import io.jsonwebtoken.security.Keys;
@@ -19,6 +20,7 @@ import java.time.ZoneId;
 import java.util.Date;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
@@ -26,15 +28,20 @@ public class TokenService {
     
     private final JwtConfig jwtConfig;
     private final TokenStore tokenStore;
+    private final DistributedLock distributedLock;
     private final SecretKey signingKey;
     
     private static final String TOKEN_TYPE_ACCESS = "access";
     private static final String TOKEN_TYPE_REFRESH = "refresh";
+    private static final String LOCK_KEY_REFRESH = "refresh:";
+    private static final long LOCK_WAIT_TIME = 3;
+    private static final long LOCK_LEASE_TIME = 10;
     
     @Autowired
-    public TokenService(JwtConfig jwtConfig, TokenStore tokenStore) {
+    public TokenService(JwtConfig jwtConfig, TokenStore tokenStore, DistributedLock distributedLock) {
         this.jwtConfig = jwtConfig;
         this.tokenStore = tokenStore;
+        this.distributedLock = distributedLock;
         this.signingKey = Keys.hmacShaKeyFor(
                 jwtConfig.getSecret().getBytes(StandardCharsets.UTF_8)
         );
@@ -92,50 +99,82 @@ public class TokenService {
             throw new IllegalArgumentException("Refresh Token 不能为空");
         }
         
-        if (tokenStore.isRefreshTokenUsed(refreshToken)) {
-            log.warn("[{}] Refresh token has been used: {}", traceId, tokenPreview);
-            throw new IllegalArgumentException("Refresh Token 已使用，请重新登录");
-        }
+        String lockKey = LOCK_KEY_REFRESH + refreshToken;
         
         try {
-            Claims claims = parseJwt(refreshToken);
-            
-            String tokenType = claims.get("type", String.class);
-            if (!TOKEN_TYPE_REFRESH.equals(tokenType)) {
-                log.warn("[{}] Invalid token type for refresh: {}", traceId, tokenType);
-                throw new IllegalArgumentException("无效的 Token 类型");
-            }
-            
-            String userId = claims.getSubject();
-            String username = claims.get("username", String.class);
-            
-            if (!tokenStore.validateRefreshToken(userId, refreshToken)) {
-                log.warn("[{}] Refresh token validation failed for userId: {}", traceId, userId);
-                throw new IllegalArgumentException("Refresh Token 无效或已过期");
-            }
-            
-            TokenPair newTokenPair = generateTokenPair(userId, username);
-            
-            tokenStore.markRefreshTokenUsed(
-                    refreshToken, 
-                    newTokenPair.getRefreshToken(), 
-                    userId, 
-                    jwtConfig.getRefreshTokenExpiration()
+            boolean locked = distributedLock.tryLock(
+                    lockKey, 
+                    LOCK_WAIT_TIME, 
+                    LOCK_LEASE_TIME, 
+                    TimeUnit.SECONDS
             );
             
-            log.info("[{}] Token refreshed successfully for userId: {}", traceId, userId);
+            if (!locked) {
+                log.warn("[{}] Failed to acquire lock for refresh token: {}", traceId, tokenPreview);
+                throw new IllegalArgumentException("Refresh Token 正在处理中，请稍后重试");
+            }
             
-            return newTokenPair;
+            try {
+                if (tokenStore.isRefreshTokenUsed(refreshToken)) {
+                    log.warn("[{}] Refresh token has been used: {}", traceId, tokenPreview);
+                    throw new IllegalArgumentException("Refresh Token 已使用，请重新登录");
+                }
+                
+                Claims claims;
+                try {
+                    claims = parseJwt(refreshToken);
+                } catch (ExpiredJwtException e) {
+                    log.warn("[{}] Refresh token expired: {}, cause: {}", traceId, tokenPreview, e.getMessage(), e);
+                    throw new IllegalArgumentException("Refresh Token 已过期");
+                } catch (SignatureException e) {
+                    log.warn("[{}] Refresh token signature invalid: {}, cause: {}", traceId, tokenPreview, e.getMessage(), e);
+                    throw new IllegalArgumentException("Refresh Token 签名无效");
+                } catch (MalformedJwtException e) {
+                    log.warn("[{}] Refresh token malformed: {}, cause: {}", traceId, tokenPreview, e.getMessage(), e);
+                    throw new IllegalArgumentException("Refresh Token 格式无效");
+                }
+                
+                String tokenType = claims.get("type", String.class);
+                if (!TOKEN_TYPE_REFRESH.equals(tokenType)) {
+                    log.warn("[{}] Invalid token type for refresh: {}", traceId, tokenType);
+                    throw new IllegalArgumentException("无效的 Token 类型");
+                }
+                
+                String userId = claims.getSubject();
+                String username = claims.get("username", String.class);
+                
+                if (!tokenStore.validateRefreshToken(userId, refreshToken)) {
+                    log.warn("[{}] Refresh token validation failed for userId: {}", traceId, userId);
+                    throw new IllegalArgumentException("Refresh Token 无效或已过期");
+                }
+                
+                Optional<String> oldAccessTokenOpt = tokenStore.getAccessToken(userId);
+                if (oldAccessTokenOpt.isPresent()) {
+                    String oldAccessToken = oldAccessTokenOpt.get();
+                    long remainingTtl = getRemainingTtl(claims);
+                    if (remainingTtl > 0) {
+                        tokenStore.addToBlacklist(oldAccessToken, remainingTtl);
+                        log.info("[{}] Added old access token to blacklist for userId: {}", traceId, userId);
+                    }
+                }
+                
+                TokenPair newTokenPair = generateTokenPair(userId, username);
+                
+                tokenStore.markRefreshTokenUsed(
+                        refreshToken, 
+                        newTokenPair.getRefreshToken(), 
+                        userId, 
+                        jwtConfig.getRefreshTokenExpiration()
+                );
+                
+                log.info("[{}] Token refreshed successfully for userId: {}", traceId, userId);
+                
+                return newTokenPair;
+                
+            } finally {
+                distributedLock.unlock(lockKey);
+            }
             
-        } catch (ExpiredJwtException e) {
-            log.warn("[{}] Refresh token expired: {}, cause: {}", traceId, tokenPreview, e.getMessage(), e);
-            throw new IllegalArgumentException("Refresh Token 已过期");
-        } catch (SignatureException e) {
-            log.warn("[{}] Refresh token signature invalid: {}, cause: {}", traceId, tokenPreview, e.getMessage(), e);
-            throw new IllegalArgumentException("Refresh Token 签名无效");
-        } catch (MalformedJwtException e) {
-            log.warn("[{}] Refresh token malformed: {}, cause: {}", traceId, tokenPreview, e.getMessage(), e);
-            throw new IllegalArgumentException("Refresh Token 格式无效");
         } catch (IllegalArgumentException e) {
             throw e;
         } catch (Exception e) {
@@ -329,6 +368,11 @@ public class TokenService {
                 .build()
                 .parseClaimsJws(token)
                 .getBody();
+    }
+    
+    private long getRemainingTtl(Claims claims) {
+        Date expiration = claims.getExpiration();
+        return expiration.getTime() - System.currentTimeMillis();
     }
     
     private String maskToken(String token) {
