@@ -1,5 +1,6 @@
 package com.example.tokenservice.dto;
 
+import com.example.tokenservice.common.ResultCode;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -17,15 +18,15 @@ public class ApiResponse<T> {
     
     public static <T> ApiResponse<T> success(T data) {
         return ApiResponse.<T>builder()
-                .code(200)
-                .message("success")
+                .code(ResultCode.SUCCESS.getCode())
+                .message(ResultCode.SUCCESS.getMessage())
                 .data(data)
                 .build();
     }
     
     public static <T> ApiResponse<T> success(String message, T data) {
         return ApiResponse.<T>builder()
-                .code(200)
+                .code(ResultCode.SUCCESS.getCode())
                 .message(message)
                 .data(data)
                 .build();
@@ -35,6 +36,13 @@ public class ApiResponse<T> {
         return ApiResponse.<T>builder()
                 .code(code)
                 .message(message)
+                .build();
+    }
+    
+    public static <T> ApiResponse<T> error(ResultCode resultCode) {
+        return ApiResponse.<T>builder()
+                .code(resultCode.getCode())
+                .message(resultCode.getMessage())
                 .build();
     }
 }
