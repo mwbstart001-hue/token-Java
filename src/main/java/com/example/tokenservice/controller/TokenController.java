@@ -2,10 +2,7 @@ package com.example.tokenservice.controller;
 
 import com.example.tokenservice.common.ResultCode;
 import com.example.tokenservice.common.TraceContext;
-import com.example.tokenservice.dto.ApiResponse;
-import com.example.tokenservice.dto.TokenRequest;
-import com.example.tokenservice.dto.TokenResponse;
-import com.example.tokenservice.dto.ValidationResult;
+import com.example.tokenservice.dto.*;
 import com.example.tokenservice.service.TokenService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,7 +23,24 @@ public class TokenController {
         this.tokenService = tokenService;
     }
     
+    @PostMapping("/login")
+    public ApiResponse<TokenPair> login(@Valid @RequestBody TokenRequest request) {
+        String traceId = TraceContext.getTraceId();
+        
+        log.info("[{}] Login request - userId: {}", traceId, request.getUserId());
+        
+        TokenPair tokenPair = tokenService.generateTokenPair(
+                request.getUserId(),
+                request.getUsername()
+        );
+        
+        log.info("[{}] Login successful for userId: {}", traceId, request.getUserId());
+        
+        return ApiResponse.success("登录成功", tokenPair);
+    }
+    
     @PostMapping("/generate")
+    @Deprecated
     public ApiResponse<TokenResponse> generateToken(@Valid @RequestBody TokenRequest request) {
         String traceId = TraceContext.getTraceId();
         
@@ -40,6 +54,22 @@ public class TokenController {
         log.info("[{}] Token generated successfully for userId: {}", traceId, request.getUserId());
         
         return ApiResponse.success("Token 生成成功", tokenResponse);
+    }
+    
+    @PostMapping("/refresh")
+    public ApiResponse<TokenPair> refreshToken(@Valid @RequestBody RefreshTokenRequest request) {
+        String traceId = TraceContext.getTraceId();
+        
+        log.info("[{}] Refresh token request", traceId);
+        
+        try {
+            TokenPair tokenPair = tokenService.refreshToken(request.getRefreshToken());
+            log.info("[{}] Token refreshed successfully", traceId);
+            return ApiResponse.success("Token 刷新成功", tokenPair);
+        } catch (IllegalArgumentException e) {
+            log.warn("[{}] Refresh token failed: {}", traceId, e.getMessage());
+            return ApiResponse.error(ResultCode.TOKEN_INVALID.getCode(), e.getMessage());
+        }
     }
     
     @PostMapping("/validate")
@@ -91,6 +121,37 @@ public class TokenController {
             return ApiResponse.error(
                     ResultCode.BAD_REQUEST.getCode(),
                     "Token 作废失败或已过期"
+            );
+        }
+    }
+    
+    @PostMapping("/logout")
+    public ApiResponse<Boolean> logout(
+            @RequestHeader(value = "Authorization", required = false) String authorization) {
+        
+        String traceId = TraceContext.getTraceId();
+        
+        String token = extractToken(authorization);
+        
+        if (!StringUtils.hasText(token)) {
+            log.warn("[{}] Logout request - missing token", traceId);
+            return ApiResponse.error(
+                    ResultCode.BAD_REQUEST.getCode(),
+                    "缺少 Token"
+            );
+        }
+        
+        log.info("[{}] Logout request", traceId);
+        
+        try {
+            tokenService.revokeToken(token);
+            log.info("[{}] Logout successful", traceId);
+            return ApiResponse.success("登出成功", true);
+        } catch (Exception e) {
+            log.error("[{}] Logout failed: {}", traceId, e.getMessage(), e);
+            return ApiResponse.error(
+                    ResultCode.INTERNAL_ERROR.getCode(),
+                    "登出失败"
             );
         }
     }

@@ -4,7 +4,25 @@ server:
 spring:
   application:
     name: token-service
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: 
+      database: 0
+      lettuce:
+        pool:
+          max-active: 8
+          max-wait: -1
+          max-idle: 8
+          min-idle: 0
+
+token:
+  storage:
+    type: memory
 
 jwt:
   secret: your-256-bit-secret-key-must-be-at-least-32-characters-long
   expiration: 3600000
+  access-token-expiration: 7200000
+  refresh-token-expiration: 604800000
