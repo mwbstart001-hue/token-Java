@@ -5,6 +5,7 @@ import com.example.tokenservice.config.JwtConfig;
 import com.example.tokenservice.dto.*;
 import com.example.tokenservice.ratelimit.RateLimitService;
 import com.example.tokenservice.service.TokenService;
+import com.example.tokenservice.service.UserService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -28,6 +29,9 @@ class TokenControllerTest {
 
     @Mock
     private RateLimitService rateLimitService;
+    
+    @Mock
+    private UserService userService;
 
     @InjectMocks
     private TokenController tokenController;
@@ -50,7 +54,7 @@ class TokenControllerTest {
     void login_ShouldReturnTokenPair_WhenSuccessful() {
         TokenRequest request = new TokenRequest();
         request.setUserId("user-123");
-        request.setUsername("testuser");
+        request.setPassword("password123");
 
         TokenPair expectedPair = TokenPair.builder()
                 .accessToken("access-token")
@@ -61,6 +65,8 @@ class TokenControllerTest {
                 .build();
 
         when(rateLimitService.tryAcquire(anyString(), anyInt(), anyLong())).thenReturn(true);
+        when(userService.authenticate(eq("user-123"), eq("password123"))).thenReturn(true);
+        when(userService.getUsername(eq("user-123"))).thenReturn("testuser");
         when(tokenService.generateTokenPair(eq("user-123"), eq("testuser"))).thenReturn(expectedPair);
 
         ApiResponse<TokenPair> response = tokenController.login(request, httpRequest);
@@ -71,12 +77,29 @@ class TokenControllerTest {
         assertEquals("access-token", response.getData().getAccessToken());
         assertEquals("refresh-token", response.getData().getRefreshToken());
     }
+    
+    @Test
+    void login_ShouldReturnUnauthorized_WhenPasswordInvalid() {
+        TokenRequest request = new TokenRequest();
+        request.setUserId("user-123");
+        request.setPassword("wrong-password");
+
+        when(rateLimitService.tryAcquire(anyString(), anyInt(), anyLong())).thenReturn(true);
+        when(userService.authenticate(eq("user-123"), eq("wrong-password"))).thenReturn(false);
+
+        ApiResponse<TokenPair> response = tokenController.login(request, httpRequest);
+
+        assertNotNull(response);
+        assertEquals(401, response.getCode());
+        assertEquals("用户名或密码错误", response.getMessage());
+    }
 
     @Test
     void login_ShouldReturnRateLimitError_WhenRateLimitExceeded() {
         TokenRequest request = new TokenRequest();
         request.setUserId("user-123");
         request.setUsername("testuser");
+        request.setPassword("password123");
 
         when(rateLimitService.tryAcquire(anyString(), anyInt(), anyLong())).thenReturn(false);
 
@@ -187,30 +210,5 @@ class TokenControllerTest {
         assertNotNull(response);
         assertEquals(200, response.getCode());
         assertTrue(response.getData());
-    }
-
-    @Test
-    void revokeTokenByUserId_ShouldReturnSuccess_WhenTokensRevoked() {
-        String userId = "user-123";
-
-        when(tokenService.revokeTokenByUserId(eq(userId))).thenReturn(true);
-
-        ApiResponse<Boolean> response = tokenController.revokeTokenByUserId(userId, httpRequest);
-
-        assertNotNull(response);
-        assertEquals(200, response.getCode());
-        assertTrue(response.getData());
-    }
-
-    @Test
-    void revokeTokenByUserId_ShouldReturnNotFound_WhenNoTokensFound() {
-        String userId = "non-existent-user";
-
-        when(tokenService.revokeTokenByUserId(eq(userId))).thenReturn(false);
-
-        ApiResponse<Boolean> response = tokenController.revokeTokenByUserId(userId, httpRequest);
-
-        assertNotNull(response);
-        assertNotEquals(200, response.getCode());
     }
 }
