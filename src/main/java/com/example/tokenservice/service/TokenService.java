@@ -1,5 +1,6 @@
 package com.example.tokenservice.service;
 
+import com.example.tokenservice.common.TenantContext;
 import com.example.tokenservice.common.TraceContext;
 import com.example.tokenservice.config.JwtConfig;
 import com.example.tokenservice.dto.TokenPair;
@@ -131,6 +132,13 @@ public class TokenService {
                 String userId = claims.getSubject();
                 String username = claims.get("username", String.class);
                 
+                String tokenTenantId = claims.get("tenantId", String.class);
+                String currentTenantId = TenantContext.getTenantId();
+                if (tokenTenantId != null && !tokenTenantId.equals(currentTenantId)) {
+                    log.warn("[{}] Refresh token tenant mismatch: token={}, current={}", traceId, tokenTenantId, currentTenantId);
+                    throw new IllegalArgumentException("租户不匹配");
+                }
+                
                 if (!tokenStore.validateRefreshToken(userId, refreshToken)) {
                     log.warn("[{}] Refresh token validation failed for userId: {}", traceId, userId);
                     throw new IllegalArgumentException("Refresh Token 无效或已过期");
@@ -213,6 +221,16 @@ public class TokenService {
             }
             
             String userId = claims.getSubject();
+            
+            String tokenTenantId = claims.get("tenantId", String.class);
+            String currentTenantId = TenantContext.getTenantId();
+            if (tokenTenantId != null && !tokenTenantId.equals(currentTenantId)) {
+                log.warn("[{}] Token tenant mismatch: token={}, current={}", traceId, tokenTenantId, currentTenantId);
+                return ValidationResult.builder()
+                        .valid(false)
+                        .message("租户不匹配")
+                        .build();
+            }
             
             if (!tokenStore.validateAccessToken(userId, token)) {
                 log.warn("[{}] Access token validation failed for userId: {}", traceId, userId);
@@ -307,50 +325,17 @@ public class TokenService {
         }
     }
     
-    public boolean revokeTokenByUserId(String userId) {
-        String traceId = TraceContext.getTraceId();
-        
-        log.info("[{}] Revoking token by userId: {}", traceId, userId);
-        
-        Optional<String> accessTokenOpt = tokenStore.getAccessToken(userId);
-        Optional<String> refreshTokenOpt = tokenStore.getRefreshToken(userId);
-        
-        boolean revoked = false;
-        
-        if (accessTokenOpt.isPresent()) {
-            String accessToken = accessTokenOpt.get();
-            long ttl = jwtConfig.getAccessTokenExpiration();
-            tokenStore.addToBlacklist(accessToken, ttl);
-            tokenStore.removeAccessToken(userId);
-            revoked = true;
-        }
-        
-        if (refreshTokenOpt.isPresent()) {
-            String refreshToken = refreshTokenOpt.get();
-            long ttl = jwtConfig.getRefreshTokenExpiration();
-            tokenStore.addToBlacklist(refreshToken, ttl);
-            tokenStore.removeRefreshToken(userId);
-            revoked = true;
-        }
-        
-        if (revoked) {
-            log.info("[{}] Token revoked successfully for userId: {}", traceId, userId);
-        } else {
-            log.warn("[{}] No active token found for userId: {}", traceId, userId);
-        }
-        
-        return revoked;
-    }
-    
     private String generateJwt(String userId, String username, String tokenType, Date expiration) {
         Date now = new Date();
         String jti = UUID.randomUUID().toString();
+        String tenantId = TenantContext.getTenantId();
         
         return Jwts.builder()
                 .setId(jti)
                 .setSubject(userId)
                 .claim("username", username)
                 .claim("type", tokenType)
+                .claim("tenantId", tenantId)
                 .setIssuedAt(now)
                 .setExpiration(expiration)
                 .signWith(signingKey, SignatureAlgorithm.HS256)

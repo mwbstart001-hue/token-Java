@@ -6,10 +6,10 @@ spring:
     name: token-service
   data:
     redis:
-      host: localhost
-      port: 6379
-      password: 
-      database: 0
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
       lettuce:
         pool:
           max-active: 8
@@ -19,10 +19,12 @@ spring:
 
 token:
   storage:
-    type: memory
+    type: ${TOKEN_STORAGE_TYPE:memory}
+  auth:
+    enabled: ${TOKEN_AUTH_ENABLED:false}
 
 jwt:
-  secret: your-256-bit-secret-key-must-be-at-least-32-characters-long
+  secret: ${JWT_SECRET:your-256-bit-secret-key-must-be-at-least-32-characters-long-for-production}
   expiration: 3600000
   access-token-expiration: 7200000
   refresh-token-expiration: 604800000

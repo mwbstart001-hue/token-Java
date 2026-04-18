@@ -5,6 +5,7 @@ import com.example.tokenservice.common.TraceContext;
 import com.example.tokenservice.dto.*;
 import com.example.tokenservice.ratelimit.RateLimitService;
 import com.example.tokenservice.service.TokenService;
+import com.example.tokenservice.service.UserService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.util.StringUtils;
@@ -20,6 +21,7 @@ public class TokenController {
     
     private final TokenService tokenService;
     private final RateLimitService rateLimitService;
+    private final UserService userService;
     
     private static final int LOGIN_LIMIT = 5;
     private static final int REFRESH_LIMIT = 10;
@@ -27,9 +29,10 @@ public class TokenController {
     private static final long WINDOW_MS = 60000;
     
     @Autowired
-    public TokenController(TokenService tokenService, RateLimitService rateLimitService) {
+    public TokenController(TokenService tokenService, RateLimitService rateLimitService, UserService userService) {
         this.tokenService = tokenService;
         this.rateLimitService = rateLimitService;
+        this.userService = userService;
     }
     
     @PostMapping("/login")
@@ -45,9 +48,16 @@ public class TokenController {
         
         log.info("[{}] Login request - userId: {}, IP: {}", traceId, request.getUserId(), clientIp);
         
+        if (!userService.authenticate(request.getUserId(), request.getPassword())) {
+            log.warn("[{}] Authentication failed for userId: {}, IP: {}", traceId, request.getUserId(), clientIp);
+            return ApiResponse.error(ResultCode.UNAUTHORIZED.getCode(), "用户名或密码错误");
+        }
+        
+        String username = request.getUsername() != null ? request.getUsername() : userService.getUsername(request.getUserId());
+        
         TokenPair tokenPair = tokenService.generateTokenPair(
                 request.getUserId(),
-                request.getUsername()
+                username
         );
         
         log.info("[{}] Login successful for userId: {}", traceId, request.getUserId());
@@ -170,33 +180,6 @@ public class TokenController {
             return ApiResponse.error(
                     ResultCode.INTERNAL_ERROR.getCode(),
                     "登出失败"
-            );
-        }
-    }
-    
-    @PostMapping("/revoke/user/{userId}")
-    public ApiResponse<Boolean> revokeTokenByUserId(@PathVariable String userId, HttpServletRequest httpRequest) {
-        String traceId = TraceContext.getTraceId();
-        String clientIp = getClientIp(httpRequest);
-        
-        if (!StringUtils.hasText(userId)) {
-            log.warn("[{}] Revoke token by userId request - missing userId, IP: {}", traceId, clientIp);
-            return ApiResponse.error(
-                    ResultCode.BAD_REQUEST.getCode(),
-                    "缺少用户 ID"
-            );
-        }
-        
-        log.info("[{}] Revoke token by userId: {}, IP: {}", traceId, userId, clientIp);
-        
-        boolean revoked = tokenService.revokeTokenByUserId(userId);
-        
-        if (revoked) {
-            return ApiResponse.success("用户 Token 作废成功", true);
-        } else {
-            return ApiResponse.error(
-                    ResultCode.NOT_FOUND.getCode(),
-                    "未找到该用户的有效 Token"
             );
         }
     }

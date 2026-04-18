@@ -11,4 +11,6 @@ public class TokenRequest {
     private String  userId;
     
     private String  username;
+    
+    private String  password;
 }
