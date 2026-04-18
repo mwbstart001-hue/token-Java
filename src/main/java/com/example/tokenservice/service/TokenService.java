@@ -2,13 +2,14 @@ package com.example.tokenservice.service;
 
 import com.example.tokenservice.common.TraceContext;
 import com.example.tokenservice.config.JwtConfig;
-import com.example.tokenservice.dto.TokenResponse;
+import com.example.tokenservice.dto.TokenPair;
 import com.example.tokenservice.dto.ValidationResult;
+import com.example.tokenservice.lock.DistributedLock;
+import com.example.tokenservice.store.TokenStore;
 import io.jsonwebtoken.*;
 import io.jsonwebtoken.security.Keys;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import javax.crypto.SecretKey;
@@ -16,57 +17,165 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Date;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
 public class TokenService {
     
     private final JwtConfig jwtConfig;
+    private final TokenStore tokenStore;
+    private final DistributedLock distributedLock;
     private final SecretKey signingKey;
     
-    private final Map<String, String> userTokenMap = new ConcurrentHashMap<>();
-    private final Map<String, Long> tokenBlacklist = new ConcurrentHashMap<>();
-    private final Map<String, Long> tokenExpiryMap = new ConcurrentHashMap<>();
+    private static final String TOKEN_TYPE_ACCESS = "access";
+    private static final String TOKEN_TYPE_REFRESH = "refresh";
+    private static final String LOCK_KEY_REFRESH = "refresh:";
+    private static final long LOCK_WAIT_TIME = 3;
+    private static final long LOCK_LEASE_TIME = 10;
     
     @Autowired
-    public TokenService(JwtConfig jwtConfig) {
+    public TokenService(JwtConfig jwtConfig, TokenStore tokenStore, DistributedLock distributedLock) {
         this.jwtConfig = jwtConfig;
+        this.tokenStore = tokenStore;
+        this.distributedLock = distributedLock;
         this.signingKey = Keys.hmacShaKeyFor(
                 jwtConfig.getSecret().getBytes(StandardCharsets.UTF_8)
         );
     }
     
-    public TokenResponse generateToken(String userId, String username) {
+    public TokenPair generateTokenPair(String userId, String username) {
         String traceId = TraceContext.getTraceId();
         
-        log.info("[{}] Generating token for userId: {}, username: {}", 
+        log.info("[{}] Generating token pair for userId: {}, username: {}", 
                 traceId, userId, maskUsername(username));
         
         Date now = new Date();
-        Date expiration = new Date(now.getTime() + jwtConfig.getExpiration());
         
-        String token = Jwts.builder()
-                .setSubject(userId)
-                .claim("username", username)
-                .setIssuedAt(now)
-                .setExpiration(expiration)
-                .signWith(signingKey, SignatureAlgorithm.HS256)
-                .compact();
+        long accessTokenTtl = jwtConfig.getAccessTokenExpiration();
+        Date accessTokenExpiration = new Date(now.getTime() + accessTokenTtl);
+        String accessToken = generateJwt(userId, username, TOKEN_TYPE_ACCESS, accessTokenExpiration);
         
-        userTokenMap.put(userId, token);
-        tokenExpiryMap.put(token, expiration.getTime());
+        long refreshTokenTtl = jwtConfig.getRefreshTokenExpiration();
+        Date refreshTokenExpiration = new Date(now.getTime() + refreshTokenTtl);
+        String refreshToken = generateJwt(userId, username, TOKEN_TYPE_REFRESH, refreshTokenExpiration);
         
-        log.info("[{}] Token generated successfully for userId: {}, expiresAt: {}", 
-                traceId, userId, expiration);
+        tokenStore.saveAccessToken(userId, accessToken, accessTokenTtl);
+        tokenStore.saveRefreshToken(userId, refreshToken, refreshTokenTtl);
         
-        return TokenResponse.builder()
-                .token(token)
+        log.info("[{}] Token pair generated successfully for userId: {}", traceId, userId);
+        
+        return TokenPair.builder()
+                .accessToken(accessToken)
+                .refreshToken(refreshToken)
                 .userId(userId)
-                .issuedAt(LocalDateTime.ofInstant(now.toInstant(), ZoneId.systemDefault()))
-                .expiresAt(LocalDateTime.ofInstant(expiration.toInstant(), ZoneId.systemDefault()))
+                .accessTokenExpiresAt(LocalDateTime.ofInstant(accessTokenExpiration.toInstant(), ZoneId.systemDefault()))
+                .refreshTokenExpiresAt(LocalDateTime.ofInstant(refreshTokenExpiration.toInstant(), ZoneId.systemDefault()))
                 .build();
+    }
+    
+    public TokenPair refreshToken(String refreshToken) {
+        String traceId = TraceContext.getTraceId();
+        String tokenPreview = maskToken(refreshToken);
+        
+        log.info("[{}] Refreshing token: {}", traceId, tokenPreview);
+        
+        if (refreshToken == null || refreshToken.trim().isEmpty()) {
+            log.warn("[{}] Refresh token is null or empty", traceId);
+            throw new IllegalArgumentException("Refresh Token 不能为空");
+        }
+        
+        String lockKey = LOCK_KEY_REFRESH + refreshToken;
+        
+        try {
+            boolean locked = distributedLock.tryLock(
+                    lockKey, 
+                    LOCK_WAIT_TIME, 
+                    LOCK_LEASE_TIME, 
+                    TimeUnit.SECONDS
+            );
+            
+            if (!locked) {
+                log.warn("[{}] Failed to acquire lock for refresh token: {}", traceId, tokenPreview);
+                throw new IllegalArgumentException("Refresh Token 正在处理中，请稍后重试");
+            }
+            
+            try {
+                if (tokenStore.isRefreshTokenUsed(refreshToken)) {
+                    log.warn("[{}] Refresh token has been used: {}", traceId, tokenPreview);
+                    throw new IllegalArgumentException("Refresh Token 已使用，请重新登录");
+                }
+                
+                Claims claims;
+                try {
+                    claims = parseJwt(refreshToken);
+                } catch (ExpiredJwtException e) {
+                    log.warn("[{}] Refresh token expired: {}, cause: {}", traceId, tokenPreview, e.getMessage(), e);
+                    throw new IllegalArgumentException("Refresh Token 已过期");
+                } catch (SignatureException e) {
+                    log.warn("[{}] Refresh token signature invalid: {}, cause: {}", traceId, tokenPreview, e.getMessage(), e);
+                    throw new IllegalArgumentException("Refresh Token 签名无效");
+                } catch (MalformedJwtException e) {
+                    log.warn("[{}] Refresh token malformed: {}, cause: {}", traceId, tokenPreview, e.getMessage(), e);
+                    throw new IllegalArgumentException("Refresh Token 格式无效");
+                }
+                
+                String tokenType = claims.get("type", String.class);
+                if (!TOKEN_TYPE_REFRESH.equals(tokenType)) {
+                    log.warn("[{}] Invalid token type for refresh: {}", traceId, tokenType);
+                    throw new IllegalArgumentException("无效的 Token 类型");
+                }
+                
+                String userId = claims.getSubject();
+                String username = claims.get("username", String.class);
+                
+                if (!tokenStore.validateRefreshToken(userId, refreshToken)) {
+                    log.warn("[{}] Refresh token validation failed for userId: {}", traceId, userId);
+                    throw new IllegalArgumentException("Refresh Token 无效或已过期");
+                }
+                
+                Optional<String> oldAccessTokenOpt = tokenStore.getAccessToken(userId);
+                if (oldAccessTokenOpt.isPresent()) {
+                    String oldAccessToken = oldAccessTokenOpt.get();
+                    long remainingTtl = getRemainingTtl(claims);
+                    if (remainingTtl > 0) {
+                        tokenStore.addToBlacklist(oldAccessToken, remainingTtl);
+                        log.info("[{}] Added old access token to blacklist for userId: {}", traceId, userId);
+                    }
+                }
+                
+                tokenStore.removeRefreshToken(userId);
+                long refreshTokenRemainingTtl = getRemainingTtl(claims);
+                if (refreshTokenRemainingTtl > 0) {
+                    tokenStore.addToBlacklist(refreshToken, refreshTokenRemainingTtl);
+                    log.info("[{}] Added old refresh token to blacklist for userId: {}", traceId, userId);
+                }
+                
+                TokenPair newTokenPair = generateTokenPair(userId, username);
+                
+                tokenStore.markRefreshTokenUsed(
+                        refreshToken, 
+                        newTokenPair.getRefreshToken(), 
+                        userId, 
+                        jwtConfig.getRefreshTokenExpiration()
+                );
+                
+                log.info("[{}] Token refreshed successfully for userId: {}", traceId, userId);
+                
+                return newTokenPair;
+                
+            } finally {
+                distributedLock.unlock(lockKey);
+            }
+            
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("[{}] Failed to refresh token: {}, cause: {}", traceId, tokenPreview, e.getMessage(), e);
+            throw new IllegalArgumentException("Token 刷新失败: " + e.getMessage());
+        }
     }
     
     public ValidationResult validateToken(String token) {
@@ -84,7 +193,7 @@ public class TokenService {
         }
         
         try {
-            if (tokenBlacklist.containsKey(token)) {
+            if (tokenStore.isBlacklisted(token)) {
                 log.warn("[{}] Token is in blacklist: {}", traceId, tokenPreview);
                 return ValidationResult.builder()
                         .valid(false)
@@ -92,18 +201,21 @@ public class TokenService {
                         .build();
             }
             
-            Claims claims = Jwts.parserBuilder()
-                    .setSigningKey(signingKey)
-                    .build()
-                    .parseClaimsJws(token)
-                    .getBody();
+            Claims claims = parseJwt(token);
+            
+            String tokenType = claims.get("type", String.class);
+            if (!TOKEN_TYPE_ACCESS.equals(tokenType)) {
+                log.warn("[{}] Invalid token type for validation: {}", traceId, tokenType);
+                return ValidationResult.builder()
+                        .valid(false)
+                        .message("无效的 Token 类型")
+                        .build();
+            }
             
             String userId = claims.getSubject();
             
-            String storedToken = userTokenMap.get(userId);
-            if (storedToken == null || !token.equals(storedToken)) {
-                log.warn("[{}] Token mismatch for userId: {}. Token may be expired or replaced.", 
-                        traceId, userId);
+            if (!tokenStore.validateAccessToken(userId, token)) {
+                log.warn("[{}] Access token validation failed for userId: {}", traceId, userId);
                 return ValidationResult.builder()
                         .valid(false)
                         .message("Token 已失效")
@@ -170,20 +282,15 @@ public class TokenService {
         }
         
         try {
-            Claims claims = Jwts.parserBuilder()
-                    .setSigningKey(signingKey)
-                    .build()
-                    .parseClaimsJws(token)
-                    .getBody();
+            Claims claims = parseJwt(token);
             
             String userId = claims.getSubject();
             Date expiration = claims.getExpiration();
             long ttl = expiration.getTime() - System.currentTimeMillis();
             
             if (ttl > 0) {
-                tokenBlacklist.put(token, expiration.getTime());
-                userTokenMap.remove(userId);
-                tokenExpiryMap.remove(token);
+                tokenStore.addToBlacklist(token, ttl);
+                tokenStore.removeAccessToken(userId);
                 
                 log.info("[{}] Token revoked successfully for userId: {}", traceId, userId);
                 return true;
@@ -205,25 +312,52 @@ public class TokenService {
         
         log.info("[{}] Revoking token by userId: {}", traceId, userId);
         
-        String token = userTokenMap.get(userId);
+        Optional<String> accessTokenOpt = tokenStore.getAccessToken(userId);
+        Optional<String> refreshTokenOpt = tokenStore.getRefreshToken(userId);
         
-        if (token != null) {
-            Long expiryTime = tokenExpiryMap.get(token);
-            if (expiryTime != null && expiryTime > System.currentTimeMillis()) {
-                tokenBlacklist.put(token, expiryTime);
-            }
-            userTokenMap.remove(userId);
-            tokenExpiryMap.remove(token);
-            
-            log.info("[{}] Token revoked successfully for userId: {}", traceId, userId);
-            return true;
+        boolean revoked = false;
+        
+        if (accessTokenOpt.isPresent()) {
+            String accessToken = accessTokenOpt.get();
+            long ttl = jwtConfig.getAccessTokenExpiration();
+            tokenStore.addToBlacklist(accessToken, ttl);
+            tokenStore.removeAccessToken(userId);
+            revoked = true;
         }
         
-        log.warn("[{}] No active token found for userId: {}", traceId, userId);
-        return false;
+        if (refreshTokenOpt.isPresent()) {
+            String refreshToken = refreshTokenOpt.get();
+            long ttl = jwtConfig.getRefreshTokenExpiration();
+            tokenStore.addToBlacklist(refreshToken, ttl);
+            tokenStore.removeRefreshToken(userId);
+            revoked = true;
+        }
+        
+        if (revoked) {
+            log.info("[{}] Token revoked successfully for userId: {}", traceId, userId);
+        } else {
+            log.warn("[{}] No active token found for userId: {}", traceId, userId);
+        }
+        
+        return revoked;
     }
     
-    public Claims parseToken(String token) {
+    private String generateJwt(String userId, String username, String tokenType, Date expiration) {
+        Date now = new Date();
+        String jti = UUID.randomUUID().toString();
+        
+        return Jwts.builder()
+                .setId(jti)
+                .setSubject(userId)
+                .claim("username", username)
+                .claim("type", tokenType)
+                .setIssuedAt(now)
+                .setExpiration(expiration)
+                .signWith(signingKey, SignatureAlgorithm.HS256)
+                .compact();
+    }
+    
+    private Claims parseJwt(String token) {
         return Jwts.parserBuilder()
                 .setSigningKey(signingKey)
                 .build()
@@ -231,29 +365,9 @@ public class TokenService {
                 .getBody();
     }
     
-    @Scheduled(fixedRate = 60000)
-    public void cleanExpiredTokens() {
-        long now = System.currentTimeMillis();
-        int initialBlacklistSize = tokenBlacklist.size();
-        int initialTokenCount = tokenExpiryMap.size();
-        
-        tokenBlacklist.entrySet().removeIf(entry -> entry.getValue() <= now);
-        
-        tokenExpiryMap.entrySet().removeIf(entry -> {
-            if (entry.getValue() <= now) {
-                userTokenMap.values().removeIf(v -> v.equals(entry.getKey()));
-                return true;
-            }
-            return false;
-        });
-        
-        int cleanedBlacklist = initialBlacklistSize - tokenBlacklist.size();
-        int cleanedTokens = initialTokenCount - tokenExpiryMap.size();
-        
-        if (cleanedBlacklist > 0 || cleanedTokens > 0) {
-            log.info("Cleaned expired tokens: blacklist={}, active={}, remaining users={}, remaining blacklist={}",
-                    cleanedBlacklist, cleanedTokens, userTokenMap.size(), tokenBlacklist.size());
-        }
+    private long getRemainingTtl(Claims claims) {
+        Date expiration = claims.getExpiration();
+        return expiration.getTime() - System.currentTimeMillis();
     }
     
     private String maskToken(String token) {
