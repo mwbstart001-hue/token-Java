@@ -46,6 +46,10 @@ class TokenControllerTest {
     void setUp() {
         when(tokenProperties.getSecret()).thenReturn("test-secret-key-must-be-at-least-256-bits-long-for-hs256-algorithm");
         when(tokenProperties.getDefaultExpireSeconds()).thenReturn(3600L);
+
+        TokenProperties.ApiKey apiKey = new TokenProperties.ApiKey();
+        apiKey.setEnabled(false);
+        when(tokenProperties.getApiKey()).thenReturn(apiKey);
     }
 
     @Test
