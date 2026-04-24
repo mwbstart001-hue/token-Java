@@ -1,5 +1,6 @@
 package com.example.tokenservice.service;
 
+import com.example.tokenservice.config.JwtKeyManager;
 import com.example.tokenservice.config.TokenProperties;
 import com.example.tokenservice.model.Token;
 import com.example.tokenservice.model.TokenStatus;
@@ -35,6 +36,9 @@ class TokenServiceTest {
     @Mock
     private TokenProperties tokenProperties;
 
+    @Mock
+    private JwtKeyManager jwtKeyManager;
+
     @InjectMocks
     private TokenService tokenService;
 
@@ -42,6 +46,8 @@ class TokenServiceTest {
     void setUp() {
         when(tokenProperties.getSecret()).thenReturn("test-secret-key-must-be-at-least-256-bits-long-for-hs256-algorithm");
         when(tokenProperties.getDefaultExpireSeconds()).thenReturn(3600L);
+        when(tokenProperties.getMaxExpireSeconds()).thenReturn(86400L * 30);
+        when(jwtKeyManager.isRsaAlgorithm()).thenReturn(false);
     }
 
     @Test

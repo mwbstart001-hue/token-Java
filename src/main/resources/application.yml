@@ -9,11 +9,11 @@ spring:
     url: jdbc:h2:file:./data/tokendb;DB_CLOSE_ON_EXIT=FALSE;AUTO_RECONNECT=TRUE
     driver-class-name: org.h2.Driver
     username: sa
-    password: 
+    password: ${DB_PASSWORD:}
   
   h2:
     console:
-      enabled: true
+      enabled: ${H2_CONSOLE_ENABLED:false}
       path: /h2-console
   
   jpa:
@@ -26,6 +26,16 @@ spring:
         dialect: org.hibernate.dialect.H2Dialect
 
 token:
-  secret: token-service-secret-key-must-be-at-least-256-bits-long-for-hs256
+  algorithm: RS256
+  secret: ${TOKEN_SECRET:}
+  private-key: ${TOKEN_PRIVATE_KEY:}
+  public-key: ${TOKEN_PUBLIC_KEY:}
   default-expire-seconds: 3600
+  max-expire-seconds: 2592000
   storage-type: memory
+  
+  api-key:
+    enabled: true
+    header-name: X-API-Key
+    allowed-keys:
+      - ${API_KEY:your-secure-api-key-here}
