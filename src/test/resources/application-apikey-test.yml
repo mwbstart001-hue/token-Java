@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: token-service
+  
+  datasource:
+    url: jdbc:h2:mem:testdb-apikey;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: 
+  
+  h2:
+    console:
+      enabled: true
+  
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+
+token:
+  algorithm: RS256
+  secret: token-service-secret-key-must-be-at-least-256-bits-long-for-hs256
+  default-expire-seconds: 3600
+  max-expire-seconds: 2592000
+  storage-type: memory
+  
+  api-key:
+    enabled: true
+    header-name: X-API-Key
+    allowed-keys:
+      - test-valid-api-key-12345

@@ -1,9 +1,12 @@
 package com.example.tokenservice.config;
 
-import com.example.tokenservice.exception.AuthenticationException;
+import com.example.tokenservice.dto.ApiResponse;
 import com.example.tokenservice.exception.ErrorCode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -27,9 +30,11 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
     private static final Logger log = LoggerFactory.getLogger(ApiKeyAuthenticationFilter.class);
 
     private final TokenProperties tokenProperties;
+    private final ObjectMapper objectMapper;
 
-    public ApiKeyAuthenticationFilter(TokenProperties tokenProperties) {
+    public ApiKeyAuthenticationFilter(TokenProperties tokenProperties, ObjectMapper objectMapper) {
         this.tokenProperties = tokenProperties;
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -54,16 +59,35 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
 
         if (!StringUtils.hasText(apiKey)) {
             log.warn("API密钥认证失败 - 缺少API密钥，请求路径: {}", request.getRequestURI());
-            throw new AuthenticationException(ErrorCode.AUTH_MISSING_API_KEY);
+            sendErrorResponse(response, ErrorCode.AUTH_MISSING_API_KEY);
+            return;
         }
 
         if (!isValidApiKey(apiKey, apiKeyConfig.getAllowedKeys())) {
             log.warn("API密钥认证失败 - 无效的API密钥，请求路径: {}", request.getRequestURI());
-            throw new AuthenticationException(ErrorCode.AUTH_INVALID_API_KEY);
+            sendErrorResponse(response, ErrorCode.AUTH_INVALID_API_KEY);
+            return;
         }
 
         log.debug("API密钥认证成功 - 请求路径: {}", request.getRequestURI());
         filterChain.doFilter(request, response);
+    }
+
+    /**
+     * 发送错误响应
+     * @param response HTTP响应
+     * @param errorCode 错误码
+     */
+    private void sendErrorResponse(HttpServletResponse response, ErrorCode errorCode) throws IOException {
+        response.setStatus(HttpStatus.UNAUTHORIZED.value());
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.setCharacterEncoding("UTF-8");
+
+        ApiResponse<Void> apiResponse = ApiResponse.error(errorCode);
+        String json = objectMapper.writeValueAsString(apiResponse);
+
+        response.getWriter().write(json);
+        response.getWriter().flush();
     }
 
     /**
