@@ -11,6 +11,7 @@ public class TokenOperationEvent extends ApplicationEvent {
 
     private final String userId;
     private final String jwtId;
+    private final String parentJwtId;
     private final String tokenValue;
     private final TokenOperationType operationType;
     private final boolean success;
@@ -18,12 +19,13 @@ public class TokenOperationEvent extends ApplicationEvent {
     private final String sourceIp;
     private final String userAgent;
 
-    public TokenOperationEvent(Object source, String userId, String jwtId, String tokenValue,
+    public TokenOperationEvent(Object source, String userId, String jwtId, String parentJwtId, String tokenValue,
                                 TokenOperationType operationType, boolean success, String failureReason,
                                 String sourceIp, String userAgent) {
         super(source);
         this.userId = userId;
         this.jwtId = jwtId;
+        this.parentJwtId = parentJwtId;
         this.tokenValue = tokenValue;
         this.operationType = operationType;
         this.success = success;
@@ -38,6 +40,10 @@ public class TokenOperationEvent extends ApplicationEvent {
 
     public String getJwtId() {
         return jwtId;
+    }
+
+    public String getParentJwtId() {
+        return parentJwtId;
     }
 
     public String getTokenValue() {

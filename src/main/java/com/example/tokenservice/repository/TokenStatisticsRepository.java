@@ -13,6 +13,10 @@ import java.util.List;
 @Repository
 public interface TokenStatisticsRepository extends JpaRepository<TokenStatistics, Long> {
 
+    List<TokenStatistics> findByJwtId(String jwtId);
+
+    List<TokenStatistics> findByParentJwtIdOrderByOperationTimeAsc(String parentJwtId);
+
     List<TokenStatistics> findByUserIdAndOperationTimeBetweenOrderByOperationTimeDesc(
             String userId, LocalDateTime startTime, LocalDateTime endTime);
 

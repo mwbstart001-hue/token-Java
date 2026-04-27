@@ -25,6 +25,9 @@ public class TokenStatistics {
     @Column(name = "jwt_id", length = 255)
     private String jwtId;
 
+    @Column(name = "parent_jwt_id", length = 255)
+    private String parentJwtId;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "operation_type", nullable = false, length = 50)
     private TokenOperationType operationType;
@@ -70,6 +73,14 @@ public class TokenStatistics {
 
     public void setJwtId(String jwtId) {
         this.jwtId = jwtId;
+    }
+
+    public String getParentJwtId() {
+        return parentJwtId;
+    }
+
+    public void setParentJwtId(String parentJwtId) {
+        this.parentJwtId = parentJwtId;
     }
 
     public TokenOperationType getOperationType() {
