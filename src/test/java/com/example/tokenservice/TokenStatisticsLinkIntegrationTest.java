@@ -7,6 +7,8 @@ import com.example.tokenservice.model.TokenStatistics;
 import com.example.tokenservice.repository.TokenStatisticsRepository;
 import com.example.tokenservice.service.TokenService;
 import com.example.tokenservice.service.TokenStatisticsService;
+import org.awaitility.Awaitility;
+import org.awaitility.core.ConditionFactory;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,8 +22,10 @@ import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.*;
 
 @SpringBootTest
@@ -47,6 +51,29 @@ class TokenStatisticsLinkIntegrationTest {
     @BeforeEach
     void setUp() {
         statisticsRepository.deleteAll();
+        Awaitility.setDefaultTimeout(10, TimeUnit.SECONDS);
+        Awaitility.setDefaultPollInterval(100, TimeUnit.MILLISECONDS);
+    }
+
+    private ConditionFactory awaitAsync() {
+        return await().atMost(10, TimeUnit.SECONDS)
+                .pollInterval(100, TimeUnit.MILLISECONDS);
+    }
+
+    private void waitForRecords(int expectedCount) {
+        awaitAsync().until(() -> statisticsRepository.count() == expectedCount);
+    }
+
+    private void waitForRecordsByType(String userId, TokenOperationType type, long expectedCount) {
+        LocalDateTime start = LocalDateTime.now().minusMinutes(1);
+        LocalDateTime end = LocalDateTime.now().plusMinutes(1);
+        awaitAsync().until(() -> {
+            List<TokenStatisticsSummary> stats = statisticsService.getUserStatistics(userId, start, end);
+            return stats.stream()
+                    .filter(s -> s.getOperationType() == type)
+                    .mapToLong(TokenStatisticsSummary::getTotalCount)
+                    .sum() == expectedCount;
+        });
     }
 
     @Test
@@ -58,6 +85,8 @@ class TokenStatisticsLinkIntegrationTest {
 
         assertNotNull(token);
         assertFalse(token.isEmpty());
+
+        waitForRecords(1);
 
         LocalDateTime afterOp = LocalDateTime.now().plusSeconds(1);
 
@@ -90,6 +119,8 @@ class TokenStatisticsLinkIntegrationTest {
         String token = tokenService.generateToken(userId, "test-subject", 3600L);
         String expectedJwtId = jwtKeyManager.extractJwtIdQuietly(token);
 
+        waitForRecords(1);
+
         LocalDateTime afterOp = LocalDateTime.now().plusSeconds(1);
 
         List<TokenStatistics> records = statisticsService.getUserRecords(userId, beforeOp, afterOp);
@@ -114,6 +145,8 @@ class TokenStatisticsLinkIntegrationTest {
             tokenService.generateToken(userId, "subject-" + i, 3600L);
         }
 
+        waitForRecords(generateCount);
+
         LocalDateTime afterOp = LocalDateTime.now().plusSeconds(1);
 
         List<TokenStatisticsSummary> stats = statisticsService.getUserStatistics(userId, beforeOp, afterOp);
@@ -131,10 +164,13 @@ class TokenStatisticsLinkIntegrationTest {
         LocalDateTime beforeOp = LocalDateTime.now().minusSeconds(1);
 
         String token = tokenService.generateToken(userId, "test", 3600L);
+        waitForRecords(1);
 
         boolean valid = tokenService.validateToken(token);
 
         assertTrue(valid);
+
+        waitForRecords(2);
 
         LocalDateTime afterOp = LocalDateTime.now().plusSeconds(1);
 
@@ -155,13 +191,15 @@ class TokenStatisticsLinkIntegrationTest {
     }
 
     @Test
-    void validateToken_WithInvalidToken_ShouldNotRecordStatistics() {
+    void validateToken_WithInvalidToken_ShouldNotRecordStatistics() throws InterruptedException {
         String invalidToken = "this-is-an-invalid-token-12345";
         LocalDateTime beforeOp = LocalDateTime.now().minusSeconds(1);
 
         boolean valid = tokenService.validateToken(invalidToken);
 
         assertFalse(valid);
+
+        Thread.sleep(500);
 
         LocalDateTime afterOp = LocalDateTime.now().plusSeconds(1);
 
@@ -179,7 +217,10 @@ class TokenStatisticsLinkIntegrationTest {
         LocalDateTime beforeOp = LocalDateTime.now().minusSeconds(1);
 
         String token = tokenService.generateToken(userId, "test", 3600L);
+        waitForRecords(1);
+
         tokenService.validateToken(token);
+        waitForRecords(2);
 
         LocalDateTime afterOp = LocalDateTime.now().plusSeconds(1);
 
@@ -205,11 +246,14 @@ class TokenStatisticsLinkIntegrationTest {
         LocalDateTime beforeOp = LocalDateTime.now().minusSeconds(1);
 
         String oldToken = tokenService.generateToken(userId, "test", 3600L);
+        waitForRecords(1);
 
         String newToken = tokenService.renewToken(oldToken, 3600L, true);
 
         assertNotNull(newToken);
         assertNotEquals(oldToken, newToken);
+
+        waitForRecords(2);
 
         LocalDateTime afterOp = LocalDateTime.now().plusSeconds(1);
 
@@ -231,11 +275,14 @@ class TokenStatisticsLinkIntegrationTest {
 
         String oldToken = tokenService.generateToken(userId, "test", 3600L);
         String oldJwtId = jwtKeyManager.extractJwtIdQuietly(oldToken);
+        waitForRecords(1);
 
         String newToken = tokenService.renewToken(oldToken, 3600L, true);
         String newJwtId = jwtKeyManager.extractJwtIdQuietly(newToken);
 
         assertNotEquals(oldJwtId, newJwtId);
+
+        waitForRecords(2);
 
         LocalDateTime afterOp = LocalDateTime.now().plusSeconds(1);
 
@@ -251,13 +298,15 @@ class TokenStatisticsLinkIntegrationTest {
     }
 
     @Test
-    void renewToken_WithInvalidToken_ShouldNotRecordStatistics() {
+    void renewToken_WithInvalidToken_ShouldNotRecordStatistics() throws InterruptedException {
         String invalidToken = "invalid-token-for-renew";
         LocalDateTime beforeOp = LocalDateTime.now().minusSeconds(1);
 
         String newToken = tokenService.renewToken(invalidToken, 3600L, true);
 
         assertNull(newToken);
+
+        Thread.sleep(500);
 
         LocalDateTime afterOp = LocalDateTime.now().plusSeconds(1);
 
@@ -271,10 +320,13 @@ class TokenStatisticsLinkIntegrationTest {
         LocalDateTime beforeOp = LocalDateTime.now().minusSeconds(1);
 
         String token = tokenService.generateToken(userId, "test", 3600L);
+        waitForRecords(1);
 
         boolean invalidated = tokenService.invalidateToken(token);
 
         assertTrue(invalidated);
+
+        waitForRecords(2);
 
         LocalDateTime afterOp = LocalDateTime.now().plusSeconds(1);
 
@@ -295,8 +347,10 @@ class TokenStatisticsLinkIntegrationTest {
 
         String token = tokenService.generateToken(userId, "test", 3600L);
         String expectedJwtId = jwtKeyManager.extractJwtIdQuietly(token);
+        waitForRecords(1);
 
         tokenService.invalidateToken(token);
+        waitForRecords(2);
 
         LocalDateTime afterOp = LocalDateTime.now().plusSeconds(1);
 
@@ -317,12 +371,24 @@ class TokenStatisticsLinkIntegrationTest {
         LocalDateTime beforeOp = LocalDateTime.now().minusSeconds(1);
 
         String token = tokenService.generateToken(userId, "test", 3600L);
+        waitForRecordsByType(userId, TokenOperationType.GENERATE, 1);
+
         tokenService.validateToken(token);
+        waitForRecordsByType(userId, TokenOperationType.VALIDATE, 1);
+
         tokenService.validateToken(token);
+        waitForRecordsByType(userId, TokenOperationType.VALIDATE, 2);
 
         String newToken = tokenService.renewToken(token, 3600L, true);
+        waitForRecordsByType(userId, TokenOperationType.RENEW, 1);
+
         tokenService.validateToken(newToken);
+        waitForRecordsByType(userId, TokenOperationType.VALIDATE, 3);
+
         tokenService.invalidateToken(newToken);
+        waitForRecordsByType(userId, TokenOperationType.INVALIDATE, 1);
+
+        waitForRecords(6);
 
         LocalDateTime afterOp = LocalDateTime.now().plusSeconds(1);
 
@@ -367,11 +433,21 @@ class TokenStatisticsLinkIntegrationTest {
         LocalDateTime beforeOp = LocalDateTime.now().minusSeconds(1);
 
         String token1 = tokenService.generateToken(user1, "test", 3600L);
+        waitForRecordsByType(user1, TokenOperationType.GENERATE, 1);
+
         tokenService.validateToken(token1);
+        waitForRecordsByType(user1, TokenOperationType.VALIDATE, 1);
 
         String token2 = tokenService.generateToken(user2, "test", 3600L);
+        waitForRecordsByType(user2, TokenOperationType.GENERATE, 1);
+
         tokenService.validateToken(token2);
+        waitForRecordsByType(user2, TokenOperationType.VALIDATE, 1);
+
         tokenService.invalidateToken(token2);
+        waitForRecordsByType(user2, TokenOperationType.INVALIDATE, 1);
+
+        waitForRecords(5);
 
         LocalDateTime afterOp = LocalDateTime.now().plusSeconds(1);
 
@@ -402,8 +478,15 @@ class TokenStatisticsLinkIntegrationTest {
         LocalDateTime beforeOp = LocalDateTime.now().minusSeconds(1);
 
         tokenService.generateToken(userA, "test", 3600L);
+        waitForRecordsByType(userA, TokenOperationType.GENERATE, 1);
+
         tokenService.generateToken(userA, "test", 3600L);
+        waitForRecordsByType(userA, TokenOperationType.GENERATE, 2);
+
         tokenService.generateToken(userB, "test", 3600L);
+        waitForRecordsByType(userB, TokenOperationType.GENERATE, 1);
+
+        waitForRecords(3);
 
         LocalDateTime afterOp = LocalDateTime.now().plusSeconds(1);
 
@@ -430,12 +513,11 @@ class TokenStatisticsLinkIntegrationTest {
         String userId = "concurrent-user";
         int threadCount = 20;
         int operationsPerThread = 5;
+        int expectedTotalRecords = threadCount * operationsPerThread * 2;
 
         CountDownLatch generateLatch = new CountDownLatch(threadCount);
         ExecutorService executor = Executors.newFixedThreadPool(threadCount);
         AtomicInteger successCount = new AtomicInteger(0);
-
-        LocalDateTime beforeOp = LocalDateTime.now().minusSeconds(1);
 
         for (int i = 0; i < threadCount; i++) {
             executor.submit(new Runnable() {
@@ -461,7 +543,10 @@ class TokenStatisticsLinkIntegrationTest {
 
         assertEquals(threadCount, successCount.get());
 
-        LocalDateTime afterOp = LocalDateTime.now().plusSeconds(10);
+        LocalDateTime beforeOp = LocalDateTime.now().minusMinutes(1);
+        LocalDateTime afterOp = LocalDateTime.now().plusMinutes(1);
+
+        waitForRecords(expectedTotalRecords);
 
         List<TokenStatisticsSummary> stats = statisticsService.getUserStatistics(userId, beforeOp, afterOp);
 
@@ -480,11 +565,13 @@ class TokenStatisticsLinkIntegrationTest {
     }
 
     @Test
-    void validate_WithInvalidToken_NotRecorded() {
+    void validate_WithInvalidToken_NotRecorded() throws InterruptedException {
         LocalDateTime beforeOp = LocalDateTime.now().minusSeconds(1);
 
         tokenService.validateToken("invalid-token-1");
         tokenService.validateToken("invalid-token-2");
+
+        Thread.sleep(500);
 
         LocalDateTime afterOp = LocalDateTime.now().plusSeconds(1);
 
@@ -493,10 +580,12 @@ class TokenStatisticsLinkIntegrationTest {
     }
 
     @Test
-    void renew_WithInvalidToken_NotRecorded() {
+    void renew_WithInvalidToken_NotRecorded() throws InterruptedException {
         LocalDateTime beforeOp = LocalDateTime.now().minusSeconds(1);
 
         tokenService.renewToken("invalid-token", 3600L, true);
+
+        Thread.sleep(500);
 
         LocalDateTime afterOp = LocalDateTime.now().plusSeconds(1);
 
@@ -505,10 +594,12 @@ class TokenStatisticsLinkIntegrationTest {
     }
 
     @Test
-    void invalidate_WithInvalidToken_NotRecorded() {
+    void invalidate_WithInvalidToken_NotRecorded() throws InterruptedException {
         LocalDateTime beforeOp = LocalDateTime.now().minusSeconds(1);
 
         tokenService.invalidateToken("non-existent-token");
+
+        Thread.sleep(500);
 
         LocalDateTime afterOp = LocalDateTime.now().plusSeconds(1);
 
@@ -522,11 +613,20 @@ class TokenStatisticsLinkIntegrationTest {
         LocalDateTime beforeOp = LocalDateTime.now().minusSeconds(1);
 
         String validToken = tokenService.generateToken(userId, "test", 3600L);
+        waitForRecordsByType(userId, TokenOperationType.GENERATE, 1);
+
         tokenService.validateToken(validToken);
+        waitForRecordsByType(userId, TokenOperationType.VALIDATE, 1);
+
         tokenService.validateToken("invalid-token");
         tokenService.validateToken(validToken);
+        waitForRecordsByType(userId, TokenOperationType.VALIDATE, 2);
+
         tokenService.renewToken("invalid-token", 3600L, true);
         tokenService.invalidateToken(validToken);
+        waitForRecordsByType(userId, TokenOperationType.INVALIDATE, 1);
+
+        waitForRecords(4);
 
         LocalDateTime afterOp = LocalDateTime.now().plusSeconds(1);
 
@@ -555,5 +655,32 @@ class TokenStatisticsLinkIntegrationTest {
 
         assertTrue(invalidateStats.isPresent());
         assertEquals(1L, invalidateStats.get().getTotalCount());
+    }
+
+    @Test
+    void asyncEventProcessing_ShouldBeAsynchronous() throws InterruptedException {
+        String userId = "async-test-user";
+        
+        long startTime = System.currentTimeMillis();
+        
+        String token = tokenService.generateToken(userId, "test", 3600L);
+        
+        long operationTime = System.currentTimeMillis() - startTime;
+        
+        assertTrue(operationTime < 1000, "主操作应该快速返回（异步处理）");
+        
+        waitForRecords(1);
+        
+        long totalTime = System.currentTimeMillis() - startTime;
+        
+        List<TokenStatistics> records = statisticsService.getUserRecords(
+            userId, 
+            LocalDateTime.now().minusMinutes(1), 
+            LocalDateTime.now().plusMinutes(1)
+        );
+        
+        assertFalse(records.isEmpty());
+        assertEquals(userId, records.get(0).getUserId());
+        assertEquals(TokenOperationType.GENERATE, records.get(0).getOperationType());
     }
 }
