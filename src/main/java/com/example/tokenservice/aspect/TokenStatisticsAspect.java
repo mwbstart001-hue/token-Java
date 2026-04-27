@@ -1,5 +1,6 @@
 package com.example.tokenservice.aspect;
 
+import com.example.tokenservice.config.JwtKeyManager;
 import com.example.tokenservice.config.TokenProperties;
 import com.example.tokenservice.event.TokenOperationEvent;
 import com.example.tokenservice.model.TokenOperationType;
@@ -15,8 +16,13 @@ import org.springframework.stereotype.Component;
 /**
  * Token操作统计切面
  * 使用AOP拦截TokenService的操作，记录统计信息
- * 仅当token.statistics.enabled=true时启用
+ * 仅当 token.statistics.enabled=true 时启用
  * 无效Token操作不触发计数
+ * 
+ * 重构说明：
+ * 1. 注入 JwtKeyManager 替代对 TokenService 的依赖
+ * 2. JwtKeyManager 提供解析能力，可以独立从 Token 中提取 userId 和 jwtId
+ * 3. 切面不再需要碰 TokenService，实现解耦
  */
 @Aspect
 @Component
@@ -27,10 +33,14 @@ public class TokenStatisticsAspect {
 
     private final ApplicationEventPublisher eventPublisher;
     private final TokenProperties tokenProperties;
+    private final JwtKeyManager jwtKeyManager;
 
-    public TokenStatisticsAspect(ApplicationEventPublisher eventPublisher, TokenProperties tokenProperties) {
+    public TokenStatisticsAspect(ApplicationEventPublisher eventPublisher,
+                                  TokenProperties tokenProperties,
+                                  JwtKeyManager jwtKeyManager) {
         this.eventPublisher = eventPublisher;
         this.tokenProperties = tokenProperties;
+        this.jwtKeyManager = jwtKeyManager;
     }
 
     @Around("execution(* com.example.tokenservice.service.TokenService.generateToken(..))")
@@ -44,8 +54,9 @@ public class TokenStatisticsAspect {
         
         if (result != null) {
             String tokenValue = (String) result;
-            publishEvent(userId, null, tokenValue, TokenOperationType.GENERATE, true, null);
-            log.debug("Token生成统计已记录 - userId: {}", userId);
+            String jwtId = jwtKeyManager.extractJwtIdQuietly(tokenValue);
+            publishEvent(userId, jwtId, tokenValue, TokenOperationType.GENERATE, true, null);
+            log.debug("Token生成统计已记录 - userId: {}, jwtId: {}", userId, jwtId);
         }
         
         return result;
@@ -62,11 +73,15 @@ public class TokenStatisticsAspect {
         boolean success = (Boolean) result;
         
         if (success) {
-            publishEvent("unknown", null, tokenValue, TokenOperationType.VALIDATE, true, null);
-            log.debug("Token验证统计已记录 - success: {}", success);
+            String userId = jwtKeyManager.extractUserIdQuietly(tokenValue);
+            String jwtId = jwtKeyManager.extractJwtIdQuietly(tokenValue);
+            publishEvent(userId, jwtId, tokenValue, TokenOperationType.VALIDATE, true, null);
+            log.debug("Token验证统计已记录 - userId: {}, jwtId: {}", userId, jwtId);
         } else {
             if (tokenProperties.getStatistics().isRecordInvalidTokens()) {
-                publishEvent("unknown", null, tokenValue, TokenOperationType.VALIDATE, false, "Token无效");
+                String userId = jwtKeyManager.extractUserIdQuietly(tokenValue);
+                String jwtId = jwtKeyManager.extractJwtIdQuietly(tokenValue);
+                publishEvent(userId, jwtId, tokenValue, TokenOperationType.VALIDATE, false, "Token无效");
             }
             log.debug("Token验证失败，不记录统计");
         }
@@ -79,14 +94,16 @@ public class TokenStatisticsAspect {
         Object[] args = joinPoint.getArgs();
         String oldTokenValue = (String) args[0];
         
-        log.debug("拦截Token续签操作");
+        String userId = jwtKeyManager.extractUserIdQuietly(oldTokenValue);
+        log.debug("拦截Token续签操作 - userId: {}", userId);
         
         Object result = joinPoint.proceed();
         
         if (result != null) {
             String newTokenValue = (String) result;
-            publishEvent("unknown", null, newTokenValue, TokenOperationType.RENEW, true, null);
-            log.debug("Token续签统计已记录");
+            String newJwtId = jwtKeyManager.extractJwtIdQuietly(newTokenValue);
+            publishEvent(userId, newJwtId, newTokenValue, TokenOperationType.RENEW, true, null);
+            log.debug("Token续签统计已记录 - userId: {}, newJwtId: {}", userId, newJwtId);
         }
         
         return result;
@@ -97,14 +114,16 @@ public class TokenStatisticsAspect {
         Object[] args = joinPoint.getArgs();
         String tokenValue = (String) args[0];
         
-        log.debug("拦截Token作废操作");
+        String userId = jwtKeyManager.extractUserIdQuietly(tokenValue);
+        log.debug("拦截Token作废操作 - userId: {}", userId);
         
         Object result = joinPoint.proceed();
         boolean success = (Boolean) result;
         
         if (success) {
-            publishEvent("unknown", null, tokenValue, TokenOperationType.INVALIDATE, true, null);
-            log.debug("Token作废统计已记录 - success: {}", success);
+            String jwtId = jwtKeyManager.extractJwtIdQuietly(tokenValue);
+            publishEvent(userId, jwtId, tokenValue, TokenOperationType.INVALIDATE, true, null);
+            log.debug("Token作废统计已记录 - userId: {}, jwtId: {}", userId, jwtId);
         }
         
         return result;
@@ -126,7 +145,7 @@ public class TokenStatisticsAspect {
                     null
             );
             eventPublisher.publishEvent(event);
-            log.debug("事件已发布 - type: {}, success: {}", operationType, success);
+            log.debug("事件已发布 - type: {}, userId: {}, success: {}", operationType, userId, success);
         } catch (Exception e) {
             log.warn("发布Token操作事件失败: {}", e.getMessage());
         }

@@ -8,7 +8,6 @@ import com.example.tokenservice.model.TokenStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -26,6 +25,15 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
+/**
+ * TokenService 单元测试
+ * 
+ * 重构说明：
+ * 1. JWT 解析能力已下沉到 JwtKeyManager
+ * 2. TokenService 现在委托给 JwtKeyManager 进行签名和解析
+ * 3. 测试使用真正的 JwtKeyManager 实例（而非 Mock）
+ * 4. 只 Mock TokenStore（数据存储层）
+ */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
 class TokenServiceTest {
@@ -33,21 +41,24 @@ class TokenServiceTest {
     @Mock
     private TokenStore tokenStore;
 
-    @Mock
     private TokenProperties tokenProperties;
 
-    @Mock
     private JwtKeyManager jwtKeyManager;
 
-    @InjectMocks
     private TokenService tokenService;
 
     @BeforeEach
     void setUp() {
-        when(tokenProperties.getSecret()).thenReturn("test-secret-key-must-be-at-least-256-bits-long-for-hs256-algorithm");
-        when(tokenProperties.getDefaultExpireSeconds()).thenReturn(3600L);
-        when(tokenProperties.getMaxExpireSeconds()).thenReturn(86400L * 30);
-        when(jwtKeyManager.isRsaAlgorithm()).thenReturn(false);
+        tokenProperties = new TokenProperties();
+        tokenProperties.setSecret("test-secret-key-must-be-at-least-256-bits-long-for-hs256-algorithm");
+        tokenProperties.setDefaultExpireSeconds(3600L);
+        tokenProperties.setMaxExpireSeconds(86400L * 30);
+        tokenProperties.setAlgorithm("RS256");
+
+        jwtKeyManager = new JwtKeyManager(tokenProperties);
+        jwtKeyManager.init();
+
+        tokenService = new TokenService(tokenStore, tokenProperties, jwtKeyManager);
     }
 
     @Test

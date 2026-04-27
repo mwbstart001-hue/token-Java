@@ -3,21 +3,15 @@ package com.example.tokenservice.service;
 import com.example.tokenservice.config.JwtKeyManager;
 import com.example.tokenservice.config.TokenProperties;
 import com.example.tokenservice.dto.TokenInfo;
-import com.example.tokenservice.exception.ErrorCode;
-import com.example.tokenservice.exception.TokenExpiredException;
-import com.example.tokenservice.exception.TokenInvalidException;
 import com.example.tokenservice.model.Token;
 import com.example.tokenservice.model.TokenStatus;
 import com.example.tokenservice.model.TokenStore;
 import io.jsonwebtoken.*;
-import io.jsonwebtoken.security.Keys;
 import io.jsonwebtoken.security.SignatureException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import javax.crypto.SecretKey;
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Date;
@@ -29,6 +23,11 @@ import java.util.UUID;
  * 提供Token的生成、验证、查询、作废等核心功能
  * 支持HS256和RS256两种签名算法
  * 所有操作均保证线程安全
+ * 
+ * 重构说明：
+ * 1. 密钥管理和JWT解析能力下沉到 JwtKeyManager
+ * 2. TokenService 只负责业务逻辑（存储、状态管理等）
+ * 3. 切面通过注入 JwtKeyManager 即可独立解析 Token，不再依赖 TokenService
  */
 @Service
 public class TokenService {
@@ -39,35 +38,12 @@ public class TokenService {
     private final TokenProperties tokenProperties;
     private final JwtKeyManager jwtKeyManager;
 
-    private volatile SecretKey secretKey;
-
     public TokenService(TokenStore tokenStore,
                         TokenProperties tokenProperties,
                         JwtKeyManager jwtKeyManager) {
         this.tokenStore = tokenStore;
         this.tokenProperties = tokenProperties;
         this.jwtKeyManager = jwtKeyManager;
-    }
-
-    /**
-     * 获取HS256对称加密密钥
-     * 使用双重检查锁定模式保证线程安全
-     */
-    private SecretKey getSecretKey() {
-        if (secretKey == null) {
-            synchronized (this) {
-                if (secretKey == null) {
-                    String secret = tokenProperties.getSecret();
-                    if (secret == null || secret.isEmpty()) {
-                        throw new IllegalStateException("HS256算法需要配置token.secret");
-                    }
-                    secretKey = Keys.hmacShaKeyFor(
-                            secret.getBytes(StandardCharsets.UTF_8)
-                    );
-                }
-            }
-        }
-        return secretKey;
     }
 
     /**
@@ -121,7 +97,7 @@ public class TokenService {
 
     /**
      * 构建JWT Token
-     * 根据配置选择使用HS256或RS256算法
+     * 委托给 JwtKeyManager 获取签名密钥
      */
     private String buildJwt(String jwtId, String userId, String subject,
                             LocalDateTime now, LocalDateTime expiresAt) {
@@ -133,13 +109,8 @@ public class TokenService {
                 .setExpiration(Date.from(expiresAt.atZone(ZoneId.systemDefault()).toInstant()))
                 .claim("userId", userId);
 
-        if (jwtKeyManager.isRsaAlgorithm()) {
-            log.debug("使用RS256算法签名");
-            builder.signWith(jwtKeyManager.getPrivateKey(), jwtKeyManager.getAlgorithm());
-        } else {
-            log.debug("使用HS256算法签名");
-            builder.signWith(getSecretKey(), SignatureAlgorithm.HS256);
-        }
+        builder.signWith(jwtKeyManager.getSigningKey(), jwtKeyManager.getAlgorithm());
+        log.debug("使用 {} 算法签名", jwtKeyManager.getAlgorithm().getJcaName());
 
         return builder.compact();
     }
@@ -216,47 +187,21 @@ public class TokenService {
 
     /**
      * 解析并验证JWT签名
-     * 根据配置选择使用公钥（RS256）或密钥（HS256）
-     * @throws TokenExpiredException 当Token已过期时抛出
-     * @throws TokenInvalidException 当Token无效时抛出
+     * 委托给 JwtKeyManager.parseClaims()
      */
     private Jws<Claims> parseAndVerifyJwt(String tokenValue) {
-        JwtParserBuilder parserBuilder = Jwts.parserBuilder();
-
-        if (jwtKeyManager.isRsaAlgorithm()) {
-            parserBuilder.setSigningKey(jwtKeyManager.getPublicKey());
-        } else {
-            parserBuilder.setSigningKey(getSecretKey());
-        }
-
-        return parserBuilder.build().parseClaimsJws(tokenValue);
+        return jwtKeyManager.parseClaims(tokenValue);
     }
 
     /**
      * 解析JWT获取Claims（不抛出异常，用于获取已过期Token的信息）
+     * 委托给 JwtKeyManager.parseClaimsQuietly()
      * 
      * @param tokenValue Token字符串
      * @return Claims对象，如果解析失败返回null
      */
     public Claims parseClaimsQuietly(String tokenValue) {
-        try {
-            JwtParserBuilder parserBuilder = Jwts.parserBuilder();
-
-            if (jwtKeyManager.isRsaAlgorithm()) {
-                parserBuilder.setSigningKey(jwtKeyManager.getPublicKey());
-            } else {
-                parserBuilder.setSigningKey(getSecretKey());
-            }
-
-            JwtParser parser = parserBuilder.build();
-
-            return parser.parseClaimsJws(tokenValue).getBody();
-        } catch (ExpiredJwtException e) {
-            return e.getClaims();
-        } catch (Exception e) {
-            log.debug("解析Token Claims失败: {}", e.getMessage());
-            return null;
-        }
+        return jwtKeyManager.parseClaimsQuietly(tokenValue);
     }
 
     /**
