@@ -29,3 +29,7 @@ token:
     header-name: X-API-Key
     allowed-keys:
       - test-api-key
+  
+  statistics:
+    enabled: false
+    record-invalid-tokens: false

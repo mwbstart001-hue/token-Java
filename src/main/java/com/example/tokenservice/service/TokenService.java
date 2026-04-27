@@ -233,6 +233,99 @@ public class TokenService {
     }
 
     /**
+     * 解析JWT获取Claims（不抛出异常，用于获取已过期Token的信息）
+     * 
+     * @param tokenValue Token字符串
+     * @return Claims对象，如果解析失败返回null
+     */
+    public Claims parseClaimsQuietly(String tokenValue) {
+        try {
+            JwtParserBuilder parserBuilder = Jwts.parserBuilder();
+
+            if (jwtKeyManager.isRsaAlgorithm()) {
+                parserBuilder.setSigningKey(jwtKeyManager.getPublicKey());
+            } else {
+                parserBuilder.setSigningKey(getSecretKey());
+            }
+
+            JwtParser parser = parserBuilder.build();
+
+            return parser.parseClaimsJws(tokenValue).getBody();
+        } catch (ExpiredJwtException e) {
+            return e.getClaims();
+        } catch (Exception e) {
+            log.debug("解析Token Claims失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 续签Token
+     * 基于现有有效Token生成新的Token，可选择作废原Token
+     * 
+     * @param oldTokenValue 原Token值
+     * @param newExpireSeconds 新的过期时间（秒），null则使用默认值
+     * @param invalidateOldToken 是否作废原Token
+     * @return 新生成的Token值，如果原Token无效则返回null
+     */
+    public String renewToken(String oldTokenValue, Long newExpireSeconds, boolean invalidateOldToken) {
+        log.info("开始续签Token");
+
+        Optional<Token> oldTokenOpt = tokenStore.findByTokenValue(oldTokenValue);
+
+        if (!oldTokenOpt.isPresent()) {
+            log.warn("续签Token失败：原Token不存在");
+            return null;
+        }
+
+        Token oldToken = oldTokenOpt.get();
+
+        if (!oldToken.isValid()) {
+            log.warn("续签Token失败：原Token状态无效 - status: {}, expired: {}", 
+                    oldToken.getStatus(), oldToken.isExpired());
+            return null;
+        }
+
+        try {
+            Jws<Claims> jws = parseAndVerifyJwt(oldTokenValue);
+            Claims claims = jws.getBody();
+
+            String userId = oldToken.getUserId();
+            String subject = oldToken.getSubject();
+
+            String newJwtId = UUID.randomUUID().toString();
+            log.debug("新Token JWT ID: {}", newJwtId);
+
+            long actualExpireSeconds = calculateExpireSeconds(newExpireSeconds);
+            LocalDateTime now = LocalDateTime.now();
+            LocalDateTime expiresAt = now.plusSeconds(actualExpireSeconds);
+
+            String newTokenValue = buildJwt(newJwtId, userId, subject, now, expiresAt);
+
+            Token newToken = createTokenEntity(newTokenValue, userId, subject, now, expiresAt);
+            tokenStore.save(newToken);
+
+            if (invalidateOldToken) {
+                tokenStore.updateStatus(oldTokenValue, TokenStatus.INVALIDATED);
+                log.debug("已作废原Token");
+            }
+
+            log.info("Token续签成功 - userId: {}, newJwtId: {}, expiresAt: {}", userId, newJwtId, expiresAt);
+            return newTokenValue;
+
+        } catch (ExpiredJwtException e) {
+            log.warn("续签Token失败：原Token已过期 - userId: {}", oldToken.getUserId());
+            return null;
+        } catch (SignatureException e) {
+            log.warn("续签Token失败：原Token签名无效");
+            return null;
+        } catch (Exception e) {
+            log.warn("续签Token失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * 获取Token详细信息
      * 
      * @param tokenValue Token字符串
