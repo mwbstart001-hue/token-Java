@@ -54,6 +54,11 @@ public class TokenProperties {
      */
     private ApiKey apiKey = new ApiKey();
 
+    /**
+     * 统计功能配置
+     */
+    private Statistics statistics = new Statistics();
+
     public String getAlgorithm() {
         return algorithm;
     }
@@ -118,6 +123,14 @@ public class TokenProperties {
         this.apiKey = apiKey;
     }
 
+    public Statistics getStatistics() {
+        return statistics;
+    }
+
+    public void setStatistics(Statistics statistics) {
+        this.statistics = statistics;
+    }
+
     /**
      * API密钥配置类
      */
@@ -160,6 +173,38 @@ public class TokenProperties {
 
         public void setAllowedKeys(String[] allowedKeys) {
             this.allowedKeys = allowedKeys;
+        }
+    }
+
+    /**
+     * 统计功能配置类
+     */
+    public static class Statistics {
+
+        /**
+         * 是否启用统计功能
+         */
+        private boolean enabled = true;
+
+        /**
+         * 是否记录无效Token操作
+         */
+        private boolean recordInvalidTokens = false;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public boolean isRecordInvalidTokens() {
+            return recordInvalidTokens;
+        }
+
+        public void setRecordInvalidTokens(boolean recordInvalidTokens) {
+            this.recordInvalidTokens = recordInvalidTokens;
         }
     }
 }

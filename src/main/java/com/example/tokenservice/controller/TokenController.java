@@ -3,6 +3,7 @@ package com.example.tokenservice.controller;
 import com.example.tokenservice.dto.ApiResponse;
 import com.example.tokenservice.dto.TokenGenerateRequest;
 import com.example.tokenservice.dto.TokenInfo;
+import com.example.tokenservice.dto.TokenRenewRequest;
 import com.example.tokenservice.service.TokenService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
@@ -74,5 +75,22 @@ public class TokenController {
     public ApiResponse<Void> clearExpiredTokens() {
         tokenService.clearExpiredTokens();
         return ApiResponse.success("已清理过期 Token", null);
+    }
+
+    @PostMapping("/renew")
+    public ApiResponse<Map<String, String>> renewToken(@Validated @RequestBody TokenRenewRequest request) {
+        String newToken = tokenService.renewToken(
+                request.getToken(),
+                request.getExpireSeconds(),
+                request.isInvalidateOldToken()
+        );
+        
+        if (newToken != null) {
+            Map<String, String> result = new HashMap<>();
+            result.put("token", newToken);
+            return ApiResponse.success("Token 续签成功", result);
+        } else {
+            return ApiResponse.error("Token 无效或已过期");
+        }
     }
 }

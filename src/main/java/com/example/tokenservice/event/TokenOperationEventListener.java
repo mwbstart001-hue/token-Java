@@ -1,0 +1,56 @@
+package com.example.tokenservice.event;
+
+import com.example.tokenservice.service.TokenStatisticsService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.context.event.EventListener;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.stereotype.Component;
+
+/**
+ * Token操作事件监听器
+ * 监听Token操作事件并记录统计
+ * 无效Token操作不触发计数
+ */
+@Component
+public class TokenOperationEventListener {
+
+    private static final Logger log = LoggerFactory.getLogger(TokenOperationEventListener.class);
+
+    private final TokenStatisticsService statisticsService;
+
+    public TokenOperationEventListener(TokenStatisticsService statisticsService) {
+        this.statisticsService = statisticsService;
+    }
+
+    @Async
+    @EventListener
+    public void handleTokenOperationEvent(TokenOperationEvent event) {
+        log.debug("接收到Token操作事件 - userId: {}, type: {}, success: {}", 
+                event.getUserId(), event.getOperationType(), event.isSuccess());
+
+        if (!event.isSuccess() && event.getFailureReason() != null) {
+            log.debug("操作失败，不记录统计 - userId: {}, type: {}, reason: {}", 
+                    event.getUserId(), event.getOperationType(), event.getFailureReason());
+            return;
+        }
+
+        try {
+            statisticsService.recordOperation(
+                    event.getUserId(),
+                    event.getJwtId(),
+                    event.getTokenValue(),
+                    event.getOperationType(),
+                    event.isSuccess(),
+                    event.getFailureReason(),
+                    event.getSourceIp(),
+                    event.getUserAgent()
+            );
+
+            log.debug("Token操作统计记录完成 - userId: {}, type: {}", 
+                    event.getUserId(), event.getOperationType());
+        } catch (Exception e) {
+            log.error("记录Token统计失败: {}", e.getMessage(), e);
+        }
+    }
+}
