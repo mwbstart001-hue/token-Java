@@ -35,6 +35,14 @@ public interface TokenStatisticsRepository extends JpaRepository<TokenStatistics
     @Query("SELECT s.operationType, COUNT(s) FROM TokenStatistics s WHERE s.operationTime BETWEEN :startTime AND :endTime GROUP BY s.operationType")
     List<Object[]> countByOperationTypeBetween(@Param("startTime") LocalDateTime startTime, @Param("endTime") LocalDateTime endTime);
 
+    @Query("SELECT s.operationType, " +
+           "COUNT(s), " +
+           "SUM(CASE WHEN s.success = true THEN 1 ELSE 0 END), " +
+           "SUM(CASE WHEN s.success = false THEN 1 ELSE 0 END) " +
+           "FROM TokenStatistics s WHERE s.operationTime BETWEEN :startTime AND :endTime " +
+           "GROUP BY s.operationType")
+    List<Object[]> aggregateByOperationType(@Param("startTime") LocalDateTime startTime, @Param("endTime") LocalDateTime endTime);
+
     @Query("SELECT s.userId, s.operationType, COUNT(s), " +
            "SUM(CASE WHEN s.success = true THEN 1 ELSE 0 END), " +
            "SUM(CASE WHEN s.success = false THEN 1 ELSE 0 END) " +

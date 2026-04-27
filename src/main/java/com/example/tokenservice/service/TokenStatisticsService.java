@@ -31,7 +31,7 @@ public class TokenStatisticsService {
 
     /**
      * 记录Token操作
-     * 无效Token操作不触发计数
+     * AOP层已过滤无效操作，这里直接记录
      * 
      * @param userId 用户ID
      * @param jwtId JWT ID
@@ -46,12 +46,6 @@ public class TokenStatisticsService {
     public void recordOperation(String userId, String jwtId, String tokenValue,
                                   TokenOperationType operationType, boolean success,
                                   String failureReason, String sourceIp, String userAgent) {
-        if (!success && failureReason != null) {
-            log.debug("操作失败，不触发统计计数 - userId: {}, type: {}, reason: {}", 
-                    userId, operationType, failureReason);
-            return;
-        }
-
         log.debug("记录Token操作 - userId: {}, type: {}, success: {}", userId, operationType, success);
 
         TokenStatistics statistics = new TokenStatistics();
@@ -122,23 +116,24 @@ public class TokenStatisticsService {
 
     /**
      * 获取全局统计
+     * 按操作类型分组统计
      */
     public List<TokenStatisticsSummary> getGlobalStatistics(LocalDateTime startTime, LocalDateTime endTime) {
         log.debug("查询全局统计 - startTime: {}, endTime: {}", startTime, endTime);
 
         List<TokenStatisticsSummary> summaries = new ArrayList<>();
 
-        for (TokenOperationType type : TokenOperationType.values()) {
-            long total = statisticsRepository.countByOperationTimeBetween(startTime, endTime);
-            long success = statisticsRepository.countBySuccessIsTrueAndOperationTimeBetween(startTime, endTime);
-            long failure = total - success;
+        List<Object[]> results = statisticsRepository.aggregateByOperationType(startTime, endTime);
+        for (Object[] row : results) {
+            TokenOperationType type = (TokenOperationType) row[0];
+            long total = ((Number) row[1]).longValue();
+            long success = ((Number) row[2]).longValue();
+            long failure = ((Number) row[3]).longValue();
 
-            if (total > 0) {
-                TokenStatisticsSummary summary = new TokenStatisticsSummary("GLOBAL", type, total, success, failure);
-                summary.setStartTime(startTime);
-                summary.setEndTime(endTime);
-                summaries.add(summary);
-            }
+            TokenStatisticsSummary summary = new TokenStatisticsSummary("GLOBAL", type, total, success, failure);
+            summary.setStartTime(startTime);
+            summary.setEndTime(endTime);
+            summaries.add(summary);
         }
 
         return summaries;
