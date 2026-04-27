@@ -213,8 +213,8 @@ public class TokenOperationDispatcher {
             PrioritizedCommand<?> prioritized = priorityQueue.poll();
             if (prioritized != null) {
                 log.debug("从队列执行命令 - 类型: {}, priority: {}",
-                        prioritized.command().getType(), prioritized.priority());
-                executeWithHooks(prioritized.command(), prioritized.priority());
+                        prioritized.getCommand().getType(), prioritized.getPriority());
+                executeWithHooks(prioritized.getCommand(), prioritized.getPriority());
             }
         }
         log.info("优先级队列处理完成");
@@ -290,29 +290,6 @@ public class TokenOperationDispatcher {
             } catch (Exception e) {
                 log.error("钩子执行异常 - 类型: onError", e);
             }
-        }
-    }
-
-    public static class PrioritizedCommand<R> implements Comparable<PrioritizedCommand<R>> {
-        private final TokenCommand<R> command;
-        private final int priority;
-
-        public PrioritizedCommand(TokenCommand<R> command, int priority) {
-            this.command = command;
-            this.priority = priority;
-        }
-
-        public TokenCommand<R> command() {
-            return command;
-        }
-
-        public int priority() {
-            return priority;
-        }
-
-        @Override
-        public int compareTo(PrioritizedCommand<R> other) {
-            return Integer.compare(other.priority, this.priority);
         }
     }
 }
