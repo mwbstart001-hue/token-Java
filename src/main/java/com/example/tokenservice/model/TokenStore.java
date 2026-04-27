@@ -14,5 +14,7 @@ public interface TokenStore {
 
     void updateStatus(String tokenValue, TokenStatus status);
 
+    boolean updateStatusIfActive(String tokenValue, TokenStatus status);
+
     void clearExpired();
 }

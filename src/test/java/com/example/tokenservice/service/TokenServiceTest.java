@@ -2,9 +2,15 @@ package com.example.tokenservice.service;
 
 import com.example.tokenservice.config.JwtKeyManager;
 import com.example.tokenservice.config.TokenProperties;
+import com.example.tokenservice.dispatcher.TokenOperationDispatcher;
+import com.example.tokenservice.factory.TokenOperationFactory;
 import com.example.tokenservice.model.Token;
 import com.example.tokenservice.model.TokenStatus;
 import com.example.tokenservice.model.TokenStore;
+import com.example.tokenservice.strategy.JwtTokenGenerator;
+import com.example.tokenservice.strategy.JwtTokenValidator;
+import com.example.tokenservice.strategy.TokenGenerator;
+import com.example.tokenservice.strategy.TokenValidator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -29,10 +35,10 @@ import static org.mockito.Mockito.*;
  * TokenService 单元测试
  * 
  * 重构说明：
- * 1. JWT 解析能力已下沉到 JwtKeyManager
- * 2. TokenService 现在委托给 JwtKeyManager 进行签名和解析
- * 3. 测试使用真正的 JwtKeyManager 实例（而非 Mock）
- * 4. 只 Mock TokenStore（数据存储层）
+ * 1. 使用设计模式重构后，TokenService 现在委托给调度器
+ * 2. 测试仍然使用真实的策略（JwtTokenGenerator/JwtTokenValidator）
+ * 3. 只 Mock TokenStore（数据存储层）
+ * 4. 架构：TokenService → Dispatcher → Factory → Command → Strategy
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -42,9 +48,11 @@ class TokenServiceTest {
     private TokenStore tokenStore;
 
     private TokenProperties tokenProperties;
-
     private JwtKeyManager jwtKeyManager;
-
+    private TokenGenerator tokenGenerator;
+    private TokenValidator tokenValidator;
+    private TokenOperationFactory operationFactory;
+    private TokenOperationDispatcher dispatcher;
     private TokenService tokenService;
 
     @BeforeEach
@@ -58,7 +66,16 @@ class TokenServiceTest {
         jwtKeyManager = new JwtKeyManager(tokenProperties);
         jwtKeyManager.init();
 
-        tokenService = new TokenService(tokenStore, tokenProperties, jwtKeyManager);
+        tokenGenerator = new JwtTokenGenerator(jwtKeyManager);
+        tokenValidator = new JwtTokenValidator(jwtKeyManager);
+
+        operationFactory = new TokenOperationFactory(
+            tokenProperties, tokenStore, tokenGenerator, tokenValidator
+        );
+
+        dispatcher = new TokenOperationDispatcher(operationFactory);
+
+        tokenService = new TokenService(dispatcher, tokenStore, jwtKeyManager);
     }
 
     @Test
@@ -123,11 +140,12 @@ class TokenServiceTest {
         Token token = createToken(tokenValue, "user123", TokenStatus.ACTIVE, LocalDateTime.now().plusHours(1));
 
         when(tokenStore.findByTokenValue(tokenValue)).thenReturn(Optional.of(token));
+        when(tokenStore.updateStatusIfActive(eq(tokenValue), eq(TokenStatus.INVALIDATED))).thenReturn(true);
 
         boolean result = tokenService.invalidateToken(tokenValue);
 
         assertTrue(result);
-        verify(tokenStore, times(1)).updateStatus(eq(tokenValue), eq(TokenStatus.INVALIDATED));
+        verify(tokenStore, times(1)).updateStatusIfActive(eq(tokenValue), eq(TokenStatus.INVALIDATED));
     }
 
     @Test
@@ -140,6 +158,7 @@ class TokenServiceTest {
         boolean result = tokenService.invalidateToken(tokenValue);
 
         assertFalse(result);
+        verify(tokenStore, never()).updateStatusIfActive(anyString(), any());
         verify(tokenStore, never()).updateStatus(anyString(), any());
     }
 
@@ -173,6 +192,7 @@ class TokenServiceTest {
     }
 
     private String generateTestToken(String userId, long expireSeconds) {
+        when(tokenStore.save(any(Token.class))).thenAnswer(invocation -> invocation.getArgument(0));
         return tokenService.generateToken(userId, "test", expireSeconds);
     }
 
