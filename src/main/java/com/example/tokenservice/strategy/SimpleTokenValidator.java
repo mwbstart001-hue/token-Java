@@ -2,13 +2,12 @@ package com.example.tokenservice.strategy;
 
 import com.example.tokenservice.config.TokenProperties;
 import io.jsonwebtoken.Claims;
-import io.jsonwebtoken.impl.DefaultClaims;
+import io.jsonwebtoken.Jwts;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Base64;
@@ -130,7 +129,6 @@ public class SimpleTokenValidator implements TokenValidator {
         claimsMap.put("iat", new Date(issuedTime));
         claimsMap.put("exp", new Date(expireTime));
 
-        DefaultClaims claims = new DefaultClaims(claimsMap);
-        return claims;
+        return Jwts.claims(claimsMap);
     }
 }

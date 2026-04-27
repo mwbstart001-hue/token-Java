@@ -2,6 +2,7 @@ package com.example.tokenservice.service;
 
 import com.example.tokenservice.config.JwtKeyManager;
 import com.example.tokenservice.config.TokenProperties;
+import com.example.tokenservice.dispatcher.CommandHook;
 import com.example.tokenservice.dispatcher.TokenOperationDispatcher;
 import com.example.tokenservice.factory.TokenOperationFactory;
 import com.example.tokenservice.model.Token;
@@ -20,6 +21,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -73,7 +75,7 @@ class TokenServiceTest {
             tokenProperties, tokenStore, tokenGenerator, tokenValidator
         );
 
-        dispatcher = new TokenOperationDispatcher(operationFactory);
+        dispatcher = new TokenOperationDispatcher(operationFactory, tokenProperties, new ArrayList<>());
 
         tokenService = new TokenService(dispatcher, tokenStore, jwtKeyManager);
     }
