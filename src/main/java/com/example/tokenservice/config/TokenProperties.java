@@ -59,6 +59,16 @@ public class TokenProperties {
      */
     private Statistics statistics = new Statistics();
 
+    /**
+     * 调度器配置
+     */
+    private Scheduler scheduler = new Scheduler();
+
+    /**
+     * Token生成策略配置
+     */
+    private TokenStrategy strategy = new TokenStrategy();
+
     public String getAlgorithm() {
         return algorithm;
     }
@@ -129,6 +139,22 @@ public class TokenProperties {
 
     public void setStatistics(Statistics statistics) {
         this.statistics = statistics;
+    }
+
+    public Scheduler getScheduler() {
+        return scheduler;
+    }
+
+    public void setScheduler(Scheduler scheduler) {
+        this.scheduler = scheduler;
+    }
+
+    public TokenStrategy getStrategy() {
+        return strategy;
+    }
+
+    public void setStrategy(TokenStrategy strategy) {
+        this.strategy = strategy;
     }
 
     /**
@@ -205,6 +231,109 @@ public class TokenProperties {
 
         public void setRecordInvalidTokens(boolean recordInvalidTokens) {
             this.recordInvalidTokens = recordInvalidTokens;
+        }
+    }
+
+    /**
+     * 调度器配置类
+     */
+    public static class Scheduler {
+
+        /**
+         * 异步执行核心线程数
+         */
+        private int corePoolSize = 4;
+
+        /**
+         * 异步执行最大线程数
+         */
+        private int maxPoolSize = 8;
+
+        /**
+         * 队列容量
+         */
+        private int queueCapacity = 100;
+
+        /**
+         * 是否启用异步执行
+         */
+        private boolean asyncEnabled = true;
+
+        public int getCorePoolSize() {
+            return corePoolSize;
+        }
+
+        public void setCorePoolSize(int corePoolSize) {
+            this.corePoolSize = corePoolSize;
+        }
+
+        public int getMaxPoolSize() {
+            return maxPoolSize;
+        }
+
+        public void setMaxPoolSize(int maxPoolSize) {
+            this.maxPoolSize = maxPoolSize;
+        }
+
+        public int getQueueCapacity() {
+            return queueCapacity;
+        }
+
+        public void setQueueCapacity(int queueCapacity) {
+            this.queueCapacity = queueCapacity;
+        }
+
+        public boolean isAsyncEnabled() {
+            return asyncEnabled;
+        }
+
+        public void setAsyncEnabled(boolean asyncEnabled) {
+            this.asyncEnabled = asyncEnabled;
+        }
+    }
+
+    /**
+     * Token生成策略配置类
+     */
+    public static class TokenStrategy {
+
+        /**
+         * 策略类型：JWT 或 SIMPLE
+         */
+        private String type = "JWT";
+
+        /**
+         * 策略优先级
+         */
+        private int priority = 1;
+
+        /**
+         * 简单策略的密钥前缀
+         */
+        private String simplePrefix = "TOKEN-";
+
+        public String getType() {
+            return type;
+        }
+
+        public void setType(String type) {
+            this.type = type;
+        }
+
+        public int getPriority() {
+            return priority;
+        }
+
+        public void setPriority(int priority) {
+            this.priority = priority;
+        }
+
+        public String getSimplePrefix() {
+            return simplePrefix;
+        }
+
+        public void setSimplePrefix(String simplePrefix) {
+            this.simplePrefix = simplePrefix;
         }
     }
 }
