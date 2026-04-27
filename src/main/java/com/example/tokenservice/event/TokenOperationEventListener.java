@@ -10,7 +10,7 @@ import org.springframework.stereotype.Component;
 /**
  * Token操作事件监听器
  * 监听Token操作事件并记录统计
- * 无效Token操作不触发计数
+ * AOP层已过滤无效操作，这里直接处理
  */
 @Component
 public class TokenOperationEventListener {
@@ -28,12 +28,6 @@ public class TokenOperationEventListener {
     public void handleTokenOperationEvent(TokenOperationEvent event) {
         log.debug("接收到Token操作事件 - userId: {}, type: {}, success: {}", 
                 event.getUserId(), event.getOperationType(), event.isSuccess());
-
-        if (!event.isSuccess() && event.getFailureReason() != null) {
-            log.debug("操作失败，不记录统计 - userId: {}, type: {}, reason: {}", 
-                    event.getUserId(), event.getOperationType(), event.getFailureReason());
-            return;
-        }
 
         try {
             statisticsService.recordOperation(
