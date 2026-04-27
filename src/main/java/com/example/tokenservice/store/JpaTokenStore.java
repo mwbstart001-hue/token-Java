@@ -102,6 +102,18 @@ public class JpaTokenStore implements TokenStore {
 
     @Override
     @Transactional
+    public boolean updateStatusIfActive(String tokenValue, TokenStatus status) {
+        lock.writeLock().lock();
+        try {
+            int updatedCount = tokenRepository.updateStatusIfActive(tokenValue, status, LocalDateTime.now());
+            return updatedCount > 0;
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    @Override
+    @Transactional
     public void clearExpired() {
         lock.writeLock().lock();
         try {

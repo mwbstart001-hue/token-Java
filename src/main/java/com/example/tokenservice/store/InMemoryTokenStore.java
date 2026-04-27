@@ -91,6 +91,23 @@ public class InMemoryTokenStore implements TokenStore {
     }
 
     @Override
+    public boolean updateStatusIfActive(String tokenValue, TokenStatus status) {
+        lock.writeLock().lock();
+        try {
+            Token token = tokenMap.get(tokenValue);
+            if (token != null && token.getStatus() == TokenStatus.ACTIVE) {
+                token.setStatus(status);
+                token.setUpdatedAt(LocalDateTime.now());
+                tokenMap.put(tokenValue, token);
+                return true;
+            }
+            return false;
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    @Override
     public void clearExpired() {
         lock.writeLock().lock();
         try {

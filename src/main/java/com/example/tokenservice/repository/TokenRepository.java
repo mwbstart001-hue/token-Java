@@ -20,8 +20,14 @@ public interface TokenRepository extends JpaRepository<Token, String> {
     void deleteByTokenValue(String tokenValue);
 
     @Modifying
+    @Query("UPDATE Token t SET t.status = :status, t.updatedAt = :updatedAt WHERE t.tokenValue = :tokenValue AND t.status = com.example.tokenservice.model.TokenStatus.ACTIVE")
+    int updateStatusIfActive(@Param("tokenValue") String tokenValue,
+                              @Param("status") com.example.tokenservice.model.TokenStatus status,
+                              @Param("updatedAt") LocalDateTime updatedAt);
+
+    @Modifying
     @Query("UPDATE Token t SET t.status = :status, t.updatedAt = :updatedAt WHERE t.tokenValue = :tokenValue")
-    void updateStatus(@Param("tokenValue") String tokenValue, 
+    void updateStatus(@Param("tokenValue") String tokenValue,
                       @Param("status") com.example.tokenservice.model.TokenStatus status,
                       @Param("updatedAt") LocalDateTime updatedAt);
 
