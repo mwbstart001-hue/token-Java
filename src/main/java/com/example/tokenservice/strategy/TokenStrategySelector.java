@@ -12,11 +12,8 @@ import org.springframework.stereotype.Component;
 
 import javax.annotation.PostConstruct;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
-import java.util.stream.Collectors;
 
 @Component
 @Primary
@@ -29,12 +26,19 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
     private final TokenRevocationService revocationService;
     private final TokenPerformanceMonitor performanceMonitor;
 
-    private TokenGenerator selectedGenerator;
-    private TokenValidator selectedValidator;
     private final ReadWriteLock strategyLock = new ReentrantReadWriteLock();
 
     private String currentStrategyType;
     private String currentAlgorithm;
+
+    private static final String BEAN_SIMPLE_GENERATOR = "simpleTokenGenerator";
+    private static final String BEAN_SIMPLE_VALIDATOR = "simpleTokenValidator";
+    private static final String BEAN_RS256_GENERATOR = "rs256TokenGenerator";
+    private static final String BEAN_RS256_VALIDATOR = "rs256TokenValidator";
+    private static final String BEAN_HS256_GENERATOR = "hs256TokenGenerator";
+    private static final String BEAN_HS256_VALIDATOR = "hs256TokenValidator";
+    private static final String BEAN_JWT_GENERATOR = "jwtTokenGenerator";
+    private static final String BEAN_JWT_VALIDATOR = "jwtTokenValidator";
 
     public TokenStrategySelector(ApplicationContext applicationContext,
                                    TokenProperties tokenProperties,
@@ -48,7 +52,7 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
 
     @PostConstruct
     public void init() {
-        log.info("初始化 Token 策略选择器...");
+        log.info("初始化 Token 策略选择器（原型 Bean 模式）...");
         
         String strategyType = tokenProperties.getStrategy().getType();
         String algorithm = tokenProperties.getAlgorithm();
@@ -57,173 +61,73 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
 
         selectStrategies(strategyType, algorithm);
         
-        log.info("策略选择完成 - Generator: {}, Validator: {}", 
-                selectedGenerator.getClass().getSimpleName(),
-                selectedValidator.getClass().getSimpleName());
+        log.info("策略选择完成 - 类型: {}, 算法: {}", currentStrategyType, currentAlgorithm);
     }
 
     private void selectStrategies(String strategyType, String algorithm) {
         strategyLock.writeLock().lock();
         try {
             this.currentStrategyType = strategyType.toUpperCase();
-            this.currentAlgorithm = algorithm.toUpperCase();
+            this.currentAlgorithm = (algorithm != null) ? algorithm.toUpperCase() : "RS256";
 
-            if ("SIMPLE".equals(this.currentStrategyType)) {
-                selectSimpleStrategy();
-            } else {
-                selectJwtStrategy(this.currentAlgorithm);
-            }
-
-            validateSelection();
+            validateStrategySelection();
+            
+            log.info("策略配置更新 - 类型: {}, 算法: {}", currentStrategyType, currentAlgorithm);
         } finally {
             strategyLock.writeLock().unlock();
         }
     }
 
-    private void selectSimpleStrategy() {
-        log.info("选择 SIMPLE 策略类型");
-        
-        List<TokenGenerator> generators = getAvailableGenerators();
-        List<TokenValidator> validators = getAvailableValidators();
+    private void validateStrategySelection() {
+        String generatorBeanName = getGeneratorBeanName();
+        String validatorBeanName = getValidatorBeanName();
 
-        selectedGenerator = generators.stream()
-                .filter(g -> g.getClass().getSimpleName().contains("Simple"))
-                .findFirst()
-                .orElseGet(() -> {
-                    log.warn("未找到 SimpleTokenGenerator，使用第一个可用的");
-                    return generators.get(0);
-                });
+        if (!applicationContext.containsBean(generatorBeanName)) {
+            log.error("策略 Bean 不存在: {}", generatorBeanName);
+            throw new IllegalStateException("无法选择 Token 策略，Bean 不存在: " + generatorBeanName);
+        }
+        if (!applicationContext.containsBean(validatorBeanName)) {
+            log.error("策略 Bean 不存在: {}", validatorBeanName);
+            throw new IllegalStateException("无法选择 Token 策略，Bean 不存在: " + validatorBeanName);
+        }
 
-        selectedValidator = validators.stream()
-                .filter(v -> v.getClass().getSimpleName().contains("Simple"))
-                .findFirst()
-                .orElseGet(() -> {
-                    log.warn("未找到 SimpleTokenValidator，使用第一个可用的");
-                    return validators.get(0);
-                });
+        log.debug("策略验证通过 - Generator: {}, Validator: {}", generatorBeanName, validatorBeanName);
     }
 
-    private void selectJwtStrategy(String algorithm) {
-        log.info("选择 JWT 策略类型，算法: {}", algorithm);
-
-        List<TokenGenerator> generators = getAvailableGenerators();
-        List<TokenValidator> validators = getAvailableValidators();
-
-        if ("RS256".equals(algorithm)) {
-            selectRs256Strategy(generators, validators);
-        } else if ("HS256".equals(algorithm)) {
-            selectHs256Strategy(generators, validators);
+    private String getGeneratorBeanName() {
+        if ("SIMPLE".equals(currentStrategyType)) {
+            return BEAN_SIMPLE_GENERATOR;
+        } else if ("RS256".equals(currentAlgorithm)) {
+            return BEAN_RS256_GENERATOR;
+        } else if ("HS256".equals(currentAlgorithm)) {
+            return BEAN_HS256_GENERATOR;
         } else {
-            log.warn("未知算法: {}，使用通用 JwtTokenGenerator", algorithm);
-            selectGenericJwtStrategy(generators, validators);
+            return BEAN_JWT_GENERATOR;
         }
     }
 
-    private void selectRs256Strategy(List<TokenGenerator> generators, 
-                                       List<TokenValidator> validators) {
-        log.info("尝试选择 RS256 非对称加密策略");
-
-        selectedGenerator = generators.stream()
-                .filter(g -> g.getClass().getSimpleName().startsWith("RS256"))
-                .findFirst()
-                .orElseGet(() -> {
-                    log.warn("未找到 RS256TokenGenerator，尝试查找 JwtTokenGenerator");
-                    return generators.stream()
-                            .filter(g -> g.getClass().getSimpleName().equals("JwtTokenGenerator"))
-                            .findFirst()
-                            .orElse(generators.get(0));
-                });
-
-        selectedValidator = validators.stream()
-                .filter(v -> v.getClass().getSimpleName().startsWith("RS256"))
-                .findFirst()
-                .orElseGet(() -> {
-                    log.warn("未找到 RS256TokenValidator，尝试查找 JwtTokenValidator");
-                    return validators.stream()
-                            .filter(v -> v.getClass().getSimpleName().equals("JwtTokenValidator"))
-                            .findFirst()
-                            .orElse(validators.get(0));
-                });
-    }
-
-    private void selectHs256Strategy(List<TokenGenerator> generators, 
-                                       List<TokenValidator> validators) {
-        log.info("尝试选择 HS256 对称加密策略");
-
-        selectedGenerator = generators.stream()
-                .filter(g -> g.getClass().getSimpleName().startsWith("HS256"))
-                .findFirst()
-                .orElseGet(() -> {
-                    log.warn("未找到 HS256TokenGenerator，尝试查找 JwtTokenGenerator");
-                    return generators.stream()
-                            .filter(g -> g.getClass().getSimpleName().equals("JwtTokenGenerator"))
-                            .findFirst()
-                            .orElse(generators.get(0));
-                });
-
-        selectedValidator = validators.stream()
-                .filter(v -> v.getClass().getSimpleName().startsWith("HS256"))
-                .findFirst()
-                .orElseGet(() -> {
-                    log.warn("未找到 HS256TokenValidator，尝试查找 JwtTokenValidator");
-                    return validators.stream()
-                            .filter(v -> v.getClass().getSimpleName().equals("JwtTokenValidator"))
-                            .findFirst()
-                            .orElse(validators.get(0));
-                });
-    }
-
-    private void selectGenericJwtStrategy(List<TokenGenerator> generators, 
-                                            List<TokenValidator> validators) {
-        log.info("选择通用 JWT 策略");
-
-        selectedGenerator = generators.stream()
-                .filter(g -> g.getClass().getSimpleName().equals("JwtTokenGenerator"))
-                .findFirst()
-                .orElse(generators.get(0));
-
-        selectedValidator = validators.stream()
-                .filter(v -> v.getClass().getSimpleName().equals("JwtTokenValidator"))
-                .findFirst()
-                .orElse(validators.get(0));
-    }
-
-    private List<TokenGenerator> getAvailableGenerators() {
-        List<TokenGenerator> result = new ArrayList<>();
-        for (TokenGenerator generator : applicationContext.getBeansOfType(TokenGenerator.class).values()) {
-            if (generator != this) {
-                result.add(generator);
-            }
+    private String getValidatorBeanName() {
+        if ("SIMPLE".equals(currentStrategyType)) {
+            return BEAN_SIMPLE_VALIDATOR;
+        } else if ("RS256".equals(currentAlgorithm)) {
+            return BEAN_RS256_VALIDATOR;
+        } else if ("HS256".equals(currentAlgorithm)) {
+            return BEAN_HS256_VALIDATOR;
+        } else {
+            return BEAN_JWT_VALIDATOR;
         }
-        log.debug("可用的 TokenGenerator: {}", result.stream()
-                .map(g -> g.getClass().getSimpleName())
-                .collect(Collectors.toList()));
-        return result;
     }
 
-    private List<TokenValidator> getAvailableValidators() {
-        List<TokenValidator> result = new ArrayList<>();
-        for (TokenValidator validator : applicationContext.getBeansOfType(TokenValidator.class).values()) {
-            if (validator != this) {
-                result.add(validator);
-            }
-        }
-        log.debug("可用的 TokenValidator: {}", result.stream()
-                .map(v -> v.getClass().getSimpleName())
-                .collect(Collectors.toList()));
-        return result;
+    public TokenGenerator getNewGenerator() {
+        String beanName = getGeneratorBeanName();
+        log.debug("获取新的原型 Generator 实例: {}", beanName);
+        return applicationContext.getBean(beanName, TokenGenerator.class);
     }
 
-    private void validateSelection() {
-        if (selectedGenerator == null || selectedValidator == null) {
-            log.error("策略选择失败！没有找到可用的策略实现");
-            throw new IllegalStateException("无法选择 Token 策略，请检查配置");
-        }
-
-        String genName = selectedGenerator.getClass().getSimpleName();
-        String valName = selectedValidator.getClass().getSimpleName();
-
-        log.info("策略选择验证通过 - Generator: {}, Validator: {}", genName, valName);
+    public TokenValidator getNewValidator() {
+        String beanName = getValidatorBeanName();
+        log.debug("获取新的原型 Validator 实例: {}", beanName);
+        return applicationContext.getBean(beanName, TokenValidator.class);
     }
 
     public boolean switchStrategy(String strategyType, String algorithm) {
@@ -244,9 +148,7 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
 
         try {
             selectStrategies(upperType, upperAlgo);
-            log.info("策略切换成功 - Generator: {}, Validator: {}", 
-                    selectedGenerator.getClass().getSimpleName(),
-                    selectedValidator.getClass().getSimpleName());
+            log.info("策略切换成功 - 类型: {}, 算法: {}", currentStrategyType, currentAlgorithm);
             return true;
         } catch (Exception e) {
             log.error("策略切换失败: {}", e.getMessage(), e);
@@ -277,135 +179,79 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
                                             LocalDateTime issuedAt, LocalDateTime expiresAt) {
         long startTime = System.currentTimeMillis();
         
-        strategyLock.readLock().lock();
+        TokenGenerator generator = getNewGenerator();
+        String strategyName = generator.getClass().getSimpleName();
+        
         try {
-            if (selectedGenerator == null) {
-                throw new IllegalStateException("TokenGenerator 未初始化");
-            }
-            
-            TokenGenerator generator = selectedGenerator;
-            String strategyName = generator.getClass().getSimpleName();
-            
-            try {
-                TokenGenerationResult result = generator.generate(userId, subject, issuedAt, expiresAt);
-                long duration = System.currentTimeMillis() - startTime;
-                performanceMonitor.recordGenerate(strategyName, duration);
-                return result;
-            } catch (Exception e) {
-                long duration = System.currentTimeMillis() - startTime;
-                performanceMonitor.recordGenerate(strategyName, duration, true);
-                throw e;
-            }
-        } finally {
-            strategyLock.readLock().unlock();
+            TokenGenerationResult result = generator.generate(userId, subject, issuedAt, expiresAt);
+            long duration = System.currentTimeMillis() - startTime;
+            performanceMonitor.recordGenerate(strategyName, duration);
+            return result;
+        } catch (Exception e) {
+            long duration = System.currentTimeMillis() - startTime;
+            performanceMonitor.recordGenerate(strategyName, duration, true);
+            throw e;
         }
     }
 
     @Override
     public String getAlgorithm() {
-        strategyLock.readLock().lock();
-        try {
-            if (selectedGenerator == null) {
-                return tokenProperties.getAlgorithm();
-            }
-            return selectedGenerator.getAlgorithm();
-        } finally {
-            strategyLock.readLock().unlock();
-        }
+        TokenGenerator generator = getNewGenerator();
+        return generator.getAlgorithm();
     }
 
     @Override
     public ValidationResult validate(String tokenValue) {
         long startTime = System.currentTimeMillis();
         
-        strategyLock.readLock().lock();
+        TokenValidator validator = getNewValidator();
+        String strategyName = validator.getClass().getSimpleName();
+
         try {
-            if (selectedValidator == null) {
-                throw new IllegalStateException("TokenValidator 未初始化");
-            }
+            Claims claims = validator.parseQuietly(tokenValue);
+            String jwtId = claims != null ? claims.getId() : null;
 
-            TokenValidator validator = selectedValidator;
-            String strategyName = validator.getClass().getSimpleName();
-
-            try {
-                Claims claims = validator.parseQuietly(tokenValue);
-                String jwtId = claims != null ? claims.getId() : null;
-
-                if (revocationService.isRevoked(jwtId, tokenValue)) {
-                    long duration = System.currentTimeMillis() - startTime;
-                    performanceMonitor.recordValidate(strategyName, duration);
-                    log.debug("Token 已被吊销: jwtId={}", jwtId);
-                    return ValidationResult.invalid(ValidationStatus.INVALID, "Token 已被吊销");
-                }
-
-                ValidationResult result = validator.validate(tokenValue);
+            if (revocationService.isRevoked(jwtId, tokenValue)) {
                 long duration = System.currentTimeMillis() - startTime;
                 performanceMonitor.recordValidate(strategyName, duration);
-                return result;
-            } catch (Exception e) {
-                long duration = System.currentTimeMillis() - startTime;
-                performanceMonitor.recordValidate(strategyName, duration, true);
-                throw e;
+                log.debug("Token 已被吊销: jwtId={}", jwtId);
+                return ValidationResult.invalid(ValidationStatus.INVALID, "Token 已被吊销");
             }
-        } finally {
-            strategyLock.readLock().unlock();
+
+            ValidationResult result = validator.validate(tokenValue);
+            long duration = System.currentTimeMillis() - startTime;
+            performanceMonitor.recordValidate(strategyName, duration);
+            return result;
+        } catch (Exception e) {
+            long duration = System.currentTimeMillis() - startTime;
+            performanceMonitor.recordValidate(strategyName, duration, true);
+            throw e;
         }
     }
 
     @Override
     public Claims parseQuietly(String tokenValue) {
-        strategyLock.readLock().lock();
-        try {
-            if (selectedValidator == null) {
-                throw new IllegalStateException("TokenValidator 未初始化");
-            }
-            return selectedValidator.parseQuietly(tokenValue);
-        } finally {
-            strategyLock.readLock().unlock();
-        }
+        TokenValidator validator = getNewValidator();
+        return validator.parseQuietly(tokenValue);
     }
 
     @Override
     public String extractUserId(String tokenValue) {
-        strategyLock.readLock().lock();
-        try {
-            if (selectedValidator == null) {
-                throw new IllegalStateException("TokenValidator 未初始化");
-            }
-            return selectedValidator.extractUserId(tokenValue);
-        } finally {
-            strategyLock.readLock().unlock();
-        }
+        TokenValidator validator = getNewValidator();
+        return validator.extractUserId(tokenValue);
     }
 
     @Override
     public String extractJwtId(String tokenValue) {
-        strategyLock.readLock().lock();
-        try {
-            if (selectedValidator == null) {
-                throw new IllegalStateException("TokenValidator 未初始化");
-            }
-            return selectedValidator.extractJwtId(tokenValue);
-        } finally {
-            strategyLock.readLock().unlock();
-        }
+        TokenValidator validator = getNewValidator();
+        return validator.extractJwtId(tokenValue);
     }
 
     public TokenGenerator getSelectedGenerator() {
-        strategyLock.readLock().lock();
-        try {
-            return selectedGenerator;
-        } finally {
-            strategyLock.readLock().unlock();
-        }
+        return getNewGenerator();
     }
 
     public TokenValidator getSelectedValidator() {
-        strategyLock.readLock().lock();
-        try {
-            return selectedValidator;
-        } finally {
-            strategyLock.readLock().unlock();
-        }
+        return getNewValidator();
     }
 }

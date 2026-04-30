@@ -5,7 +5,7 @@ import io.jsonwebtoken.*;
 import io.jsonwebtoken.security.Keys;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Scope;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
@@ -24,13 +24,13 @@ import java.util.UUID;
  * - 性能较好，适合内部服务间通信
  * - 密钥需要保密，不适合公开暴露的客户端
  * 
- * 使用条件：
- * - 配置 token.algorithm = "HS256"
+ * 设计模式：策略模式 + 原型作用域
  * 
- * 设计模式：策略模式 + 条件化 Bean
+ * 使用 @Scope("prototype") 每次获取都创建新实例，避免单例模式下的并发安全隐患
+ * 使用 Bean 名称 "hs256TokenGenerator" 便于动态获取
  */
-@Component
-@ConditionalOnProperty(name = "token.algorithm", havingValue = "HS256")
+@Component("hs256TokenGenerator")
+@Scope("prototype")
 public class HS256TokenGenerator implements TokenGenerator {
 
     private static final Logger log = LoggerFactory.getLogger(HS256TokenGenerator.class);

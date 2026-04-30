@@ -5,6 +5,7 @@ import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Scope;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
@@ -15,7 +16,12 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * Simple Token 验证策略
+ * 使用 @Scope("prototype") 每次获取都创建新实例，避免单例模式下的并发安全隐患
+ */
 @Component("simpleTokenValidator")
+@Scope("prototype")
 public class SimpleTokenValidator implements TokenValidator {
 
     private static final Logger log = LoggerFactory.getLogger(SimpleTokenValidator.class);
