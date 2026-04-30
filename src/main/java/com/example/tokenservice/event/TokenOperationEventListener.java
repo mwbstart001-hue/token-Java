@@ -26,13 +26,14 @@ public class TokenOperationEventListener {
     @Async
     @EventListener
     public void handleTokenOperationEvent(TokenOperationEvent event) {
-        log.debug("接收到Token操作事件 - userId: {}, type: {}, success: {}", 
-                event.getUserId(), event.getOperationType(), event.isSuccess());
+        log.debug("接收到Token操作事件 - userId: {}, type: {}, jwtId: {}, parentJwtId: {}, success: {}", 
+                event.getUserId(), event.getOperationType(), event.getJwtId(), event.getParentJwtId(), event.isSuccess());
 
         try {
             statisticsService.recordOperation(
                     event.getUserId(),
                     event.getJwtId(),
+                    event.getParentJwtId(),
                     event.getTokenValue(),
                     event.getOperationType(),
                     event.isSuccess(),

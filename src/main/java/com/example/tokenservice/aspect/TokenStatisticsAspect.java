@@ -55,7 +55,7 @@ public class TokenStatisticsAspect {
         if (result != null) {
             String tokenValue = (String) result;
             String jwtId = jwtKeyManager.extractJwtIdQuietly(tokenValue);
-            publishEvent(userId, jwtId, tokenValue, TokenOperationType.GENERATE, true, null);
+            publishEvent(userId, jwtId, null, tokenValue, TokenOperationType.GENERATE, true, null);
             log.debug("Token生成统计已记录 - userId: {}, jwtId: {}", userId, jwtId);
         }
         
@@ -75,13 +75,13 @@ public class TokenStatisticsAspect {
         if (success) {
             String userId = jwtKeyManager.extractUserIdQuietly(tokenValue);
             String jwtId = jwtKeyManager.extractJwtIdQuietly(tokenValue);
-            publishEvent(userId, jwtId, tokenValue, TokenOperationType.VALIDATE, true, null);
+            publishEvent(userId, jwtId, null, tokenValue, TokenOperationType.VALIDATE, true, null);
             log.debug("Token验证统计已记录 - userId: {}, jwtId: {}", userId, jwtId);
         } else {
             if (tokenProperties.getStatistics().isRecordInvalidTokens()) {
                 String userId = jwtKeyManager.extractUserIdQuietly(tokenValue);
                 String jwtId = jwtKeyManager.extractJwtIdQuietly(tokenValue);
-                publishEvent(userId, jwtId, tokenValue, TokenOperationType.VALIDATE, false, "Token无效");
+                publishEvent(userId, jwtId, null, tokenValue, TokenOperationType.VALIDATE, false, "Token无效");
             }
             log.debug("Token验证失败，不记录统计");
         }
@@ -95,15 +95,16 @@ public class TokenStatisticsAspect {
         String oldTokenValue = (String) args[0];
         
         String userId = jwtKeyManager.extractUserIdQuietly(oldTokenValue);
-        log.debug("拦截Token续签操作 - userId: {}", userId);
+        String oldJwtId = jwtKeyManager.extractJwtIdQuietly(oldTokenValue);
+        log.debug("拦截Token续签操作 - userId: {}, oldJwtId: {}", userId, oldJwtId);
         
         Object result = joinPoint.proceed();
         
         if (result != null) {
             String newTokenValue = (String) result;
             String newJwtId = jwtKeyManager.extractJwtIdQuietly(newTokenValue);
-            publishEvent(userId, newJwtId, newTokenValue, TokenOperationType.RENEW, true, null);
-            log.debug("Token续签统计已记录 - userId: {}, newJwtId: {}", userId, newJwtId);
+            publishEvent(userId, newJwtId, oldJwtId, newTokenValue, TokenOperationType.RENEW, true, null);
+            log.debug("Token续签统计已记录 - userId: {}, newJwtId: {}, parentJwtId: {}", userId, newJwtId, oldJwtId);
         }
         
         return result;
@@ -122,14 +123,14 @@ public class TokenStatisticsAspect {
         
         if (success) {
             String jwtId = jwtKeyManager.extractJwtIdQuietly(tokenValue);
-            publishEvent(userId, jwtId, tokenValue, TokenOperationType.INVALIDATE, true, null);
+            publishEvent(userId, jwtId, null, tokenValue, TokenOperationType.INVALIDATE, true, null);
             log.debug("Token作废统计已记录 - userId: {}, jwtId: {}", userId, jwtId);
         }
         
         return result;
     }
 
-    private void publishEvent(String userId, String jwtId, String tokenValue,
+    private void publishEvent(String userId, String jwtId, String parentJwtId, String tokenValue,
                                TokenOperationType operationType, boolean success,
                                String failureReason) {
         try {
@@ -137,6 +138,7 @@ public class TokenStatisticsAspect {
                     this,
                     userId,
                     jwtId,
+                    parentJwtId,
                     tokenValue,
                     operationType,
                     success,
@@ -145,7 +147,8 @@ public class TokenStatisticsAspect {
                     null
             );
             eventPublisher.publishEvent(event);
-            log.debug("事件已发布 - type: {}, userId: {}, success: {}", operationType, userId, success);
+            log.debug("事件已发布 - type: {}, userId: {}, jwtId: {}, parentJwtId: {}, success: {}", 
+                    operationType, userId, jwtId, parentJwtId, success);
         } catch (Exception e) {
             log.warn("发布Token操作事件失败: {}", e.getMessage());
         }

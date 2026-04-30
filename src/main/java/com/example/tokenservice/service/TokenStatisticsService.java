@@ -1,5 +1,6 @@
 package com.example.tokenservice.service;
 
+import com.example.tokenservice.dto.TokenLinkNode;
 import com.example.tokenservice.dto.TokenStatisticsSummary;
 import com.example.tokenservice.model.TokenOperationType;
 import com.example.tokenservice.model.TokenStatistics;
@@ -35,6 +36,7 @@ public class TokenStatisticsService {
      * 
      * @param userId 用户ID
      * @param jwtId JWT ID
+     * @param parentJwtId 父Token的JWT ID（续签时使用）
      * @param tokenValue Token值
      * @param operationType 操作类型
      * @param success 操作是否成功
@@ -43,14 +45,16 @@ public class TokenStatisticsService {
      * @param userAgent 用户代理
      */
     @Transactional
-    public void recordOperation(String userId, String jwtId, String tokenValue,
+    public void recordOperation(String userId, String jwtId, String parentJwtId, String tokenValue,
                                   TokenOperationType operationType, boolean success,
                                   String failureReason, String sourceIp, String userAgent) {
-        log.debug("记录Token操作 - userId: {}, type: {}, success: {}", userId, operationType, success);
+        log.debug("记录Token操作 - userId: {}, type: {}, jwtId: {}, parentJwtId: {}, success: {}", 
+                userId, operationType, jwtId, parentJwtId, success);
 
         TokenStatistics statistics = new TokenStatistics();
         statistics.setUserId(userId);
         statistics.setJwtId(jwtId);
+        statistics.setParentJwtId(parentJwtId);
         statistics.setOperationType(operationType);
         statistics.setSuccess(success);
         statistics.setFailureReason(failureReason);
@@ -145,5 +149,87 @@ public class TokenStatisticsService {
     public List<TokenStatistics> getUserRecords(String userId, LocalDateTime startTime, LocalDateTime endTime) {
         log.debug("查询用户操作记录 - userId: {}, startTime: {}, endTime: {}", userId, startTime, endTime);
         return statisticsRepository.findByUserIdAndOperationTimeBetweenOrderByOperationTimeDesc(userId, startTime, endTime);
+    }
+
+    /**
+     * 获取Token链路追踪
+     * 以指定的jwtId为根节点，递归构建完整的Token生命周期链路
+     * 
+     * @param jwtId 根节点的JWT ID
+     * @return Token链路树形结构，如果未找到则返回null
+     */
+    @Transactional(readOnly = true)
+    public TokenLinkNode getTokenChain(String jwtId) {
+        log.debug("查询Token链路 - jwtId: {}", jwtId);
+
+        List<TokenStatistics> rootRecords = statisticsRepository.findByJwtId(jwtId);
+        if (rootRecords == null || rootRecords.isEmpty()) {
+            log.warn("未找到Token记录 - jwtId: {}", jwtId);
+            return null;
+        }
+
+        TokenStatistics rootRecord = findRootRecord(rootRecords, jwtId);
+        if (rootRecord == null) {
+            log.warn("未找到有效的根节点记录 - jwtId: {}", jwtId);
+            return null;
+        }
+
+        TokenLinkNode rootNode = buildLinkNode(rootRecord);
+        buildChildrenChain(rootNode);
+
+        log.debug("Token链路构建完成 - jwtId: {}", jwtId);
+        return rootNode;
+    }
+
+    /**
+     * 查找根节点记录
+     * 优先选择 GENERATE 或 RENEW 类型的记录（因为这些是创建型操作）
+     */
+    private TokenStatistics findRootRecord(List<TokenStatistics> records, String jwtId) {
+        TokenStatistics generateRecord = records.stream()
+                .filter(r -> TokenOperationType.GENERATE == r.getOperationType())
+                .findFirst()
+                .orElse(null);
+        if (generateRecord != null) {
+            return generateRecord;
+        }
+
+        TokenStatistics renewRecord = records.stream()
+                .filter(r -> TokenOperationType.RENEW == r.getOperationType())
+                .findFirst()
+                .orElse(null);
+        if (renewRecord != null) {
+            return renewRecord;
+        }
+
+        return records.get(0);
+    }
+
+    /**
+     * 递归构建子节点链路
+     */
+    private void buildChildrenChain(TokenLinkNode parentNode) {
+        List<TokenStatistics> childRecords = statisticsRepository.findByParentJwtIdOrderByOperationTimeAsc(parentNode.getJwtId());
+        
+        for (TokenStatistics childRecord : childRecords) {
+            TokenLinkNode childNode = buildLinkNode(childRecord);
+            parentNode.addChild(childNode);
+            buildChildrenChain(childNode);
+        }
+    }
+
+    /**
+     * 将 TokenStatistics 转换为 TokenLinkNode
+     */
+    private TokenLinkNode buildLinkNode(TokenStatistics statistics) {
+        TokenLinkNode node = new TokenLinkNode();
+        node.setJwtId(statistics.getJwtId());
+        node.setParentJwtId(statistics.getParentJwtId());
+        node.setOperationType(statistics.getOperationType());
+        node.setOperationTime(statistics.getOperationTime());
+        node.setUserId(statistics.getUserId());
+        node.setSuccess(statistics.isSuccess());
+        node.setFailureReason(statistics.getFailureReason());
+        return node;
     }
 }

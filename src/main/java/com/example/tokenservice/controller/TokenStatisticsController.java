@@ -1,6 +1,7 @@
 package com.example.tokenservice.controller;
 
 import com.example.tokenservice.dto.ApiResponse;
+import com.example.tokenservice.dto.TokenLinkNode;
 import com.example.tokenservice.dto.TokenStatisticsSummary;
 import com.example.tokenservice.model.TokenStatistics;
 import com.example.tokenservice.service.TokenStatisticsService;
@@ -67,6 +68,22 @@ public class TokenStatisticsController {
         
         List<TokenStatistics> records = statisticsService.getUserRecords(userId, start, end);
         return ApiResponse.success("获取用户操作记录成功", records);
+    }
+
+    /**
+     * 获取Token链路追踪
+     * 以指定的jwtId为根节点，返回完整的Token生命周期链路（树形结构）
+     * 
+     * @param jwtId 根节点的JWT ID
+     * @return Token链路树形结构
+     */
+    @GetMapping("/chain/{jwtId}")
+    public ApiResponse<TokenLinkNode> getTokenChain(@PathVariable("jwtId") String jwtId) {
+        TokenLinkNode chain = statisticsService.getTokenChain(jwtId);
+        if (chain == null) {
+            return ApiResponse.error("未找到指定的Token记录: " + jwtId);
+        }
+        return ApiResponse.success("获取Token链路成功", chain);
     }
 
     private LocalDateTime parseTime(String timeStr, LocalDateTime defaultValue) {
