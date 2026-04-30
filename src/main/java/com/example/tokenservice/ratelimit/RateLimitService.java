@@ -5,11 +5,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.StampedLock;
 
 @Service
 public class RateLimitService {
@@ -18,8 +20,8 @@ public class RateLimitService {
 
     private final TokenProperties tokenProperties;
 
-    private final ConcurrentHashMap<String, CopyOnWriteArrayList<Long>> userRateLimitMap = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, CopyOnWriteArrayList<Long>> ipRateLimitMap = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, RateLimitTracker> userRateLimitMap = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, RateLimitTracker> ipRateLimitMap = new ConcurrentHashMap<>();
 
     private final AtomicInteger cleanupCounter = new AtomicInteger(0);
     private static final int CLEANUP_INTERVAL = 100;
@@ -40,13 +42,21 @@ public class RateLimitService {
         boolean ipAllowed = true;
 
         if (userId != null && !userId.isEmpty()) {
-            userAllowed = checkAndRecord(userRateLimitMap, userId, 
-                    tokenProperties.getRateLimit().getRequestsPerMinutePerUser());
+            userAllowed = tryAcquireInternal(
+                    userRateLimitMap, 
+                    userId, 
+                    tokenProperties.getRateLimit().getRequestsPerMinutePerUser(),
+                    1
+            );
         }
 
         if (clientIp != null && !clientIp.isEmpty()) {
-            ipAllowed = checkAndRecord(ipRateLimitMap, clientIp, 
-                    tokenProperties.getRateLimit().getRequestsPerMinutePerIp());
+            ipAllowed = tryAcquireInternal(
+                    ipRateLimitMap, 
+                    clientIp, 
+                    tokenProperties.getRateLimit().getRequestsPerMinutePerIp(),
+                    1
+            );
         }
 
         if (!userAllowed) {
@@ -74,34 +84,34 @@ public class RateLimitService {
 
         cleanupIfNeeded();
 
-        long now = System.currentTimeMillis();
-        long oneMinuteAgo = now - 60000;
-
         boolean userAllowed = true;
         boolean ipAllowed = true;
 
         if (userId != null && !userId.isEmpty()) {
-            userAllowed = checkBatch(userRateLimitMap, userId, oneMinuteAgo, 
-                    tokenProperties.getRateLimit().getRequestsPerMinutePerUser(), count);
+            userAllowed = tryAcquireInternal(
+                    userRateLimitMap, 
+                    userId, 
+                    tokenProperties.getRateLimit().getRequestsPerMinutePerUser(),
+                    count
+            );
         }
 
         if (clientIp != null && !clientIp.isEmpty()) {
-            ipAllowed = checkBatch(ipRateLimitMap, clientIp, oneMinuteAgo, 
-                    tokenProperties.getRateLimit().getRequestsPerMinutePerIp(), count);
-        }
-
-        if (userAllowed && ipAllowed) {
-            for (int i = 0; i < count; i++) {
-                if (userId != null && !userId.isEmpty()) {
-                    record(userRateLimitMap, userId, now);
-                }
-                if (clientIp != null && !clientIp.isEmpty()) {
-                    record(ipRateLimitMap, clientIp, now);
-                }
-            }
+            ipAllowed = tryAcquireInternal(
+                    ipRateLimitMap, 
+                    clientIp, 
+                    tokenProperties.getRateLimit().getRequestsPerMinutePerIp(),
+                    count
+            );
         }
 
         return userAllowed && ipAllowed;
+    }
+
+    private boolean tryAcquireInternal(ConcurrentHashMap<String, RateLimitTracker> map,
+                                        String key, int limit, int count) {
+        RateLimitTracker tracker = map.computeIfAbsent(key, k -> new RateLimitTracker());
+        return tracker.tryAcquire(limit, count);
     }
 
     public RateLimitInfo getRateLimitInfo(String userId, String clientIp) {
@@ -116,16 +126,16 @@ public class RateLimitService {
         long oneMinuteAgo = now - 60000;
 
         if (userId != null && !userId.isEmpty()) {
-            CopyOnWriteArrayList<Long> timestamps = userRateLimitMap.get(userId);
-            int count = countRecentRequests(timestamps, oneMinuteAgo);
+            RateLimitTracker tracker = userRateLimitMap.get(userId);
+            int count = tracker != null ? tracker.getCountSince(oneMinuteAgo) : 0;
             int limit = tokenProperties.getRateLimit().getRequestsPerMinutePerUser();
             info.setUserRemaining(limit - count);
             info.setUserLimit(limit);
         }
 
         if (clientIp != null && !clientIp.isEmpty()) {
-            CopyOnWriteArrayList<Long> timestamps = ipRateLimitMap.get(clientIp);
-            int count = countRecentRequests(timestamps, oneMinuteAgo);
+            RateLimitTracker tracker = ipRateLimitMap.get(clientIp);
+            int count = tracker != null ? tracker.getCountSince(oneMinuteAgo) : 0;
             int limit = tokenProperties.getRateLimit().getRequestsPerMinutePerIp();
             info.setIpRemaining(limit - count);
             info.setIpLimit(limit);
@@ -138,14 +148,20 @@ public class RateLimitService {
 
     public void resetUserRateLimit(String userId) {
         if (userId != null && !userId.isEmpty()) {
-            userRateLimitMap.remove(userId);
+            RateLimitTracker tracker = userRateLimitMap.remove(userId);
+            if (tracker != null) {
+                tracker.clear();
+            }
             log.info("已重置用户限流: userId={}", userId);
         }
     }
 
     public void resetIpRateLimit(String clientIp) {
         if (clientIp != null && !clientIp.isEmpty()) {
-            ipRateLimitMap.remove(clientIp);
+            RateLimitTracker tracker = ipRateLimitMap.remove(clientIp);
+            if (tracker != null) {
+                tracker.clear();
+            }
             log.info("已重置IP限流: ip={}", clientIp);
         }
     }
@@ -154,68 +170,6 @@ public class RateLimitService {
         userRateLimitMap.clear();
         ipRateLimitMap.clear();
         log.info("已重置所有限流");
-    }
-
-    private boolean checkAndRecord(ConcurrentHashMap<String, CopyOnWriteArrayList<Long>> map, 
-                                    String key, int limit) {
-        long now = System.currentTimeMillis();
-        long oneMinuteAgo = now - 60000;
-
-        CopyOnWriteArrayList<Long> timestamps = map.get(key);
-        if (timestamps == null) {
-            timestamps = new CopyOnWriteArrayList<>();
-            CopyOnWriteArrayList<Long> existing = map.putIfAbsent(key, timestamps);
-            if (existing != null) {
-                timestamps = existing;
-            }
-        }
-
-        int count = countRecentRequests(timestamps, oneMinuteAgo);
-        
-        if (count >= limit) {
-            return false;
-        }
-
-        timestamps.add(now);
-        return true;
-    }
-
-    private boolean checkBatch(ConcurrentHashMap<String, CopyOnWriteArrayList<Long>> map,
-                               String key, long oneMinuteAgo, int limit, int count) {
-        CopyOnWriteArrayList<Long> timestamps = map.get(key);
-        if (timestamps == null) {
-            return count <= limit;
-        }
-
-        int currentCount = countRecentRequests(timestamps, oneMinuteAgo);
-        return (currentCount + count) <= limit;
-    }
-
-    private void record(ConcurrentHashMap<String, CopyOnWriteArrayList<Long>> map, 
-                        String key, long timestamp) {
-        CopyOnWriteArrayList<Long> timestamps = map.get(key);
-        if (timestamps == null) {
-            timestamps = new CopyOnWriteArrayList<>();
-            CopyOnWriteArrayList<Long> existing = map.putIfAbsent(key, timestamps);
-            if (existing != null) {
-                timestamps = existing;
-            }
-        }
-        timestamps.add(timestamp);
-    }
-
-    private int countRecentRequests(CopyOnWriteArrayList<Long> timestamps, long oneMinuteAgo) {
-        if (timestamps == null || timestamps.isEmpty()) {
-            return 0;
-        }
-
-        int count = 0;
-        for (Long timestamp : timestamps) {
-            if (timestamp != null && timestamp > oneMinuteAgo) {
-                count++;
-            }
-        }
-        return count;
     }
 
     private void cleanupIfNeeded() {
@@ -232,24 +186,20 @@ public class RateLimitService {
         log.debug("限流清理完成");
     }
 
-    private void cleanupExpiredEntries(ConcurrentHashMap<String, CopyOnWriteArrayList<Long>> map, 
+    private void cleanupExpiredEntries(ConcurrentHashMap<String, RateLimitTracker> map, 
                                          long threshold) {
-        Iterator<Map.Entry<String, CopyOnWriteArrayList<Long>>> iterator = map.entrySet().iterator();
+        Iterator<Map.Entry<String, RateLimitTracker>> iterator = map.entrySet().iterator();
         
         while (iterator.hasNext()) {
-            Map.Entry<String, CopyOnWriteArrayList<Long>> entry = iterator.next();
-            CopyOnWriteArrayList<Long> timestamps = entry.getValue();
+            Map.Entry<String, RateLimitTracker> entry = iterator.next();
+            RateLimitTracker tracker = entry.getValue();
             
-            Iterator<Long> tsIterator = timestamps.iterator();
-            while (tsIterator.hasNext()) {
-                Long timestamp = tsIterator.next();
-                if (timestamp == null || timestamp <= threshold) {
-                    tsIterator.remove();
-                }
-            }
+            int count = tracker.getCountSince(threshold);
             
-            if (timestamps.isEmpty()) {
+            if (count == 0) {
                 iterator.remove();
+            } else {
+                tracker.removeBefore(threshold);
             }
         }
     }
@@ -308,6 +258,89 @@ public class RateLimitService {
 
         public void setMaxBatchSize(int maxBatchSize) {
             this.maxBatchSize = maxBatchSize;
+        }
+    }
+
+    private static class RateLimitTracker {
+        private final StampedLock lock = new StampedLock();
+        private final List<Long> timestamps = new ArrayList<>();
+
+        public boolean tryAcquire(int limit, int count) {
+            long stamp = lock.writeLock();
+            try {
+                long now = System.currentTimeMillis();
+                long oneMinuteAgo = now - 60000;
+
+                removeExpiredTimestamps(oneMinuteAgo);
+
+                if (timestamps.size() + count > limit) {
+                    return false;
+                }
+
+                for (int i = 0; i < count; i++) {
+                    timestamps.add(now);
+                }
+
+                return true;
+            } finally {
+                lock.unlockWrite(stamp);
+            }
+        }
+
+        public int getCountSince(long threshold) {
+            long stamp = lock.tryOptimisticRead();
+            int count = 0;
+            for (Long ts : timestamps) {
+                if (ts > threshold) {
+                    count++;
+                }
+            }
+            if (lock.validate(stamp)) {
+                return count;
+            }
+            
+            stamp = lock.readLock();
+            try {
+                count = 0;
+                for (Long ts : timestamps) {
+                    if (ts > threshold) {
+                        count++;
+                    }
+                }
+                return count;
+            } finally {
+                lock.unlockRead(stamp);
+            }
+        }
+
+        public void removeBefore(long threshold) {
+            long stamp = lock.writeLock();
+            try {
+                removeExpiredTimestamps(threshold);
+            } finally {
+                lock.unlockWrite(stamp);
+            }
+        }
+
+        public void clear() {
+            long stamp = lock.writeLock();
+            try {
+                timestamps.clear();
+            } finally {
+                lock.unlockWrite(stamp);
+            }
+        }
+
+        private void removeExpiredTimestamps(long threshold) {
+            Iterator<Long> iterator = timestamps.iterator();
+            while (iterator.hasNext()) {
+                Long ts = iterator.next();
+                if (ts <= threshold) {
+                    iterator.remove();
+                } else {
+                    break;
+                }
+            }
         }
     }
 }
