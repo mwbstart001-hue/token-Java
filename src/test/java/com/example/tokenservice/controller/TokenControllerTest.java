@@ -5,6 +5,8 @@ import com.example.tokenservice.dto.ApiResponse;
 import com.example.tokenservice.dto.TokenGenerateRequest;
 import com.example.tokenservice.dto.TokenInfo;
 import com.example.tokenservice.model.TokenStatus;
+import com.example.tokenservice.ratelimit.RateLimitService;
+import com.example.tokenservice.revocation.TokenRevocationService;
 import com.example.tokenservice.service.TokenService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -37,6 +39,12 @@ class TokenControllerTest {
     @MockBean
     private TokenProperties tokenProperties;
 
+    @MockBean
+    private RateLimitService rateLimitService;
+
+    @MockBean
+    private TokenRevocationService tokenRevocationService;
+
     @Autowired
     private ObjectMapper objectMapper;
 
@@ -50,6 +58,9 @@ class TokenControllerTest {
         TokenProperties.ApiKey apiKey = new TokenProperties.ApiKey();
         apiKey.setEnabled(false);
         when(tokenProperties.getApiKey()).thenReturn(apiKey);
+
+        when(rateLimitService.tryAcquire(anyString(), anyString())).thenReturn(true);
+        when(rateLimitService.tryAcquireBatch(anyString(), anyString(), anyInt())).thenReturn(true);
     }
 
     @Test

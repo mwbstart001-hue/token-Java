@@ -69,6 +69,14 @@ public class ApiResponse<T> {
         return response;
     }
 
+    public static <T> ApiResponse<T> tooManyRequests(String message) {
+        ApiResponse<T> response = new ApiResponse<>();
+        response.setSuccess(false);
+        response.setCode(ErrorCode.TOO_MANY_REQUESTS.getCode());
+        response.setMessage(message != null ? message : ErrorCode.TOO_MANY_REQUESTS.getMessage());
+        return response;
+    }
+
     public boolean isSuccess() {
         return success;
     }
