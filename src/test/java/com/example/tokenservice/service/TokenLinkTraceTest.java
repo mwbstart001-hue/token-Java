@@ -203,52 +203,130 @@ class TokenLinkTraceTest {
     }
 
     @Test
-    void validateToken_ShouldNotHaveParentJwtId() {
+    void validateToken_ShouldBeIncludedInOperations() {
         String userId = "link-trace-user-006";
 
         String token = tokenService.generateToken(userId, "test", 3600L);
+        String jwtId = jwtKeyManager.extractJwtIdQuietly(token);
         waitForRecords(1);
 
         tokenService.validateToken(token);
         waitForRecords(2);
 
-        LocalDateTime start = LocalDateTime.now().minusMinutes(1);
-        LocalDateTime end = LocalDateTime.now().plusMinutes(1);
-        List<TokenStatistics> records = statisticsService.getUserRecords(userId, start, end);
+        TokenLinkNode chain = statisticsService.getTokenChain(jwtId);
 
-        Optional<TokenStatistics> validateRecord = records.stream()
-                .filter(r -> r.getOperationType() == TokenOperationType.VALIDATE)
-                .findFirst();
-
-        assertTrue(validateRecord.isPresent());
-        assertNull(validateRecord.get().getParentJwtId(), "验证操作不应该有 parentJwtId");
+        assertNotNull(chain);
+        assertEquals(TokenOperationType.GENERATE, chain.getOperationType());
+        
+        assertEquals(1, chain.getOperations().size(), "应该有一个验证操作");
+        TokenLinkNode validateOp = chain.getOperations().get(0);
+        assertEquals(TokenOperationType.VALIDATE, validateOp.getOperationType());
+        assertEquals(jwtId, validateOp.getJwtId());
+        assertTrue(validateOp.isSuccess());
+        assertNotNull(validateOp.getOperationDescription());
     }
 
     @Test
-    void invalidateToken_ShouldNotHaveParentJwtId() {
+    void invalidateToken_ShouldBeIncludedInOperations() {
         String userId = "link-trace-user-007";
 
         String token = tokenService.generateToken(userId, "test", 3600L);
+        String jwtId = jwtKeyManager.extractJwtIdQuietly(token);
         waitForRecords(1);
 
         tokenService.invalidateToken(token);
         waitForRecords(2);
 
-        LocalDateTime start = LocalDateTime.now().minusMinutes(1);
-        LocalDateTime end = LocalDateTime.now().plusMinutes(1);
-        List<TokenStatistics> records = statisticsService.getUserRecords(userId, start, end);
+        TokenLinkNode chain = statisticsService.getTokenChain(jwtId);
 
-        Optional<TokenStatistics> invalidateRecord = records.stream()
-                .filter(r -> r.getOperationType() == TokenOperationType.INVALIDATE)
-                .findFirst();
+        assertNotNull(chain);
+        assertEquals(TokenOperationType.GENERATE, chain.getOperationType());
+        
+        assertEquals(1, chain.getOperations().size(), "应该有一个作废操作");
+        TokenLinkNode invalidateOp = chain.getOperations().get(0);
+        assertEquals(TokenOperationType.INVALIDATE, invalidateOp.getOperationType());
+        assertEquals(jwtId, invalidateOp.getJwtId());
+        assertNotNull(invalidateOp.getOperationDescription());
+    }
 
-        assertTrue(invalidateRecord.isPresent());
-        assertNull(invalidateRecord.get().getParentJwtId(), "作废操作不应该有 parentJwtId");
+    @Test
+    void multipleValidations_ShouldAllBeIncludedInOperations() {
+        String userId = "link-trace-user-008";
+
+        String token = tokenService.generateToken(userId, "test", 3600L);
+        String jwtId = jwtKeyManager.extractJwtIdQuietly(token);
+        waitForRecords(1);
+
+        tokenService.validateToken(token);
+        waitForRecords(2);
+
+        tokenService.validateToken(token);
+        waitForRecords(3);
+
+        tokenService.validateToken(token);
+        waitForRecords(4);
+
+        TokenLinkNode chain = statisticsService.getTokenChain(jwtId);
+
+        assertNotNull(chain);
+        assertEquals(TokenOperationType.GENERATE, chain.getOperationType());
+        
+        assertEquals(3, chain.getOperations().size(), "应该有3个验证操作");
+        
+        for (TokenLinkNode op : chain.getOperations()) {
+            assertEquals(TokenOperationType.VALIDATE, op.getOperationType());
+            assertEquals(jwtId, op.getJwtId());
+        }
+    }
+
+    @Test
+    void fullLifecycle_ShouldIncludeAllOperations() {
+        String userId = "link-trace-user-009";
+
+        String token1 = tokenService.generateToken(userId, "test", 3600L);
+        String jwtId1 = jwtKeyManager.extractJwtIdQuietly(token1);
+        waitForRecords(1);
+
+        tokenService.validateToken(token1);
+        waitForRecords(2);
+
+        String token2 = tokenService.renewToken(token1, 3600L, false);
+        String jwtId2 = jwtKeyManager.extractJwtIdQuietly(token2);
+        waitForRecords(3);
+
+        tokenService.validateToken(token2);
+        waitForRecords(4);
+
+        tokenService.invalidateToken(token1);
+        waitForRecords(5);
+
+        TokenLinkNode chain = statisticsService.getTokenChain(jwtId1);
+
+        assertNotNull(chain);
+        assertEquals(TokenOperationType.GENERATE, chain.getOperationType());
+        assertEquals(jwtId1, chain.getJwtId());
+
+        assertEquals(2, chain.getOperations().size(), "token1 应该有2个操作（验证+作废）");
+        
+        long validateCount = chain.getOperations().stream()
+                .filter(op -> op.getOperationType() == TokenOperationType.VALIDATE)
+                .count();
+        long invalidateCount = chain.getOperations().stream()
+                .filter(op -> op.getOperationType() == TokenOperationType.INVALIDATE)
+                .count();
+        assertEquals(1, validateCount, "应该有1个验证操作");
+        assertEquals(1, invalidateCount, "应该有1个作废操作");
+
+        assertEquals(1, chain.getChildren().size(), "应该有1个子节点（续签的 token2）");
+        TokenLinkNode childNode = chain.getChildren().get(0);
+        assertEquals(jwtId2, childNode.getJwtId());
+        assertEquals(TokenOperationType.RENEW, childNode.getOperationType());
+        assertEquals(1, childNode.getOperations().size(), "token2 应该有1个验证操作");
     }
 
     @Test
     void getTokenChain_ShouldIncludeAllFields() {
-        String userId = "link-trace-user-008";
+        String userId = "link-trace-user-010";
 
         String token = tokenService.generateToken(userId, "test", 3600L);
         String jwtId = jwtKeyManager.extractJwtIdQuietly(token);
@@ -264,6 +342,8 @@ class TokenLinkTraceTest {
         assertTrue(chain.isSuccess());
         assertNull(chain.getFailureReason());
         assertNotNull(chain.getOperationTime());
+        assertNotNull(chain.getOperationDescription());
+        assertTrue(chain.getOperations().isEmpty());
         assertTrue(chain.getChildren().isEmpty());
     }
 }
