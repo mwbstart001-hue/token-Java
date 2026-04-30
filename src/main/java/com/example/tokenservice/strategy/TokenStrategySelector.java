@@ -277,89 +277,135 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
                                             LocalDateTime issuedAt, LocalDateTime expiresAt) {
         long startTime = System.currentTimeMillis();
         
-        if (selectedGenerator == null) {
-            throw new IllegalStateException("TokenGenerator 未初始化");
-        }
-        
+        strategyLock.readLock().lock();
         try {
-            TokenGenerationResult result = selectedGenerator.generate(userId, subject, issuedAt, expiresAt);
-            long duration = System.currentTimeMillis() - startTime;
-            performanceMonitor.recordGenerate(selectedGenerator.getClass().getSimpleName(), duration);
-            return result;
-        } catch (Exception e) {
-            long duration = System.currentTimeMillis() - startTime;
-            performanceMonitor.recordGenerate(selectedGenerator.getClass().getSimpleName(), duration, true);
-            throw e;
+            if (selectedGenerator == null) {
+                throw new IllegalStateException("TokenGenerator 未初始化");
+            }
+            
+            TokenGenerator generator = selectedGenerator;
+            String strategyName = generator.getClass().getSimpleName();
+            
+            try {
+                TokenGenerationResult result = generator.generate(userId, subject, issuedAt, expiresAt);
+                long duration = System.currentTimeMillis() - startTime;
+                performanceMonitor.recordGenerate(strategyName, duration);
+                return result;
+            } catch (Exception e) {
+                long duration = System.currentTimeMillis() - startTime;
+                performanceMonitor.recordGenerate(strategyName, duration, true);
+                throw e;
+            }
+        } finally {
+            strategyLock.readLock().unlock();
         }
     }
 
     @Override
     public String getAlgorithm() {
-        if (selectedGenerator == null) {
-            return tokenProperties.getAlgorithm();
+        strategyLock.readLock().lock();
+        try {
+            if (selectedGenerator == null) {
+                return tokenProperties.getAlgorithm();
+            }
+            return selectedGenerator.getAlgorithm();
+        } finally {
+            strategyLock.readLock().unlock();
         }
-        return selectedGenerator.getAlgorithm();
     }
 
     @Override
     public ValidationResult validate(String tokenValue) {
         long startTime = System.currentTimeMillis();
         
-        if (selectedValidator == null) {
-            throw new IllegalStateException("TokenValidator 未初始化");
-        }
-
+        strategyLock.readLock().lock();
         try {
-            Claims claims = selectedValidator.parseQuietly(tokenValue);
-            String jwtId = claims != null ? claims.getId() : null;
-
-            if (revocationService.isRevoked(jwtId, tokenValue)) {
-                long duration = System.currentTimeMillis() - startTime;
-                performanceMonitor.recordValidate(selectedValidator.getClass().getSimpleName(), duration);
-                log.debug("Token 已被吊销: jwtId={}", jwtId);
-                return ValidationResult.invalid(ValidationStatus.INVALID, "Token 已被吊销");
+            if (selectedValidator == null) {
+                throw new IllegalStateException("TokenValidator 未初始化");
             }
 
-            ValidationResult result = selectedValidator.validate(tokenValue);
-            long duration = System.currentTimeMillis() - startTime;
-            performanceMonitor.recordValidate(selectedValidator.getClass().getSimpleName(), duration);
-            return result;
-        } catch (Exception e) {
-            long duration = System.currentTimeMillis() - startTime;
-            performanceMonitor.recordValidate(selectedValidator.getClass().getSimpleName(), duration, true);
-            throw e;
+            TokenValidator validator = selectedValidator;
+            String strategyName = validator.getClass().getSimpleName();
+
+            try {
+                Claims claims = validator.parseQuietly(tokenValue);
+                String jwtId = claims != null ? claims.getId() : null;
+
+                if (revocationService.isRevoked(jwtId, tokenValue)) {
+                    long duration = System.currentTimeMillis() - startTime;
+                    performanceMonitor.recordValidate(strategyName, duration);
+                    log.debug("Token 已被吊销: jwtId={}", jwtId);
+                    return ValidationResult.invalid(ValidationStatus.INVALID, "Token 已被吊销");
+                }
+
+                ValidationResult result = validator.validate(tokenValue);
+                long duration = System.currentTimeMillis() - startTime;
+                performanceMonitor.recordValidate(strategyName, duration);
+                return result;
+            } catch (Exception e) {
+                long duration = System.currentTimeMillis() - startTime;
+                performanceMonitor.recordValidate(strategyName, duration, true);
+                throw e;
+            }
+        } finally {
+            strategyLock.readLock().unlock();
         }
     }
 
     @Override
     public Claims parseQuietly(String tokenValue) {
-        if (selectedValidator == null) {
-            throw new IllegalStateException("TokenValidator 未初始化");
+        strategyLock.readLock().lock();
+        try {
+            if (selectedValidator == null) {
+                throw new IllegalStateException("TokenValidator 未初始化");
+            }
+            return selectedValidator.parseQuietly(tokenValue);
+        } finally {
+            strategyLock.readLock().unlock();
         }
-        return selectedValidator.parseQuietly(tokenValue);
     }
 
     @Override
     public String extractUserId(String tokenValue) {
-        if (selectedValidator == null) {
-            throw new IllegalStateException("TokenValidator 未初始化");
+        strategyLock.readLock().lock();
+        try {
+            if (selectedValidator == null) {
+                throw new IllegalStateException("TokenValidator 未初始化");
+            }
+            return selectedValidator.extractUserId(tokenValue);
+        } finally {
+            strategyLock.readLock().unlock();
         }
-        return selectedValidator.extractUserId(tokenValue);
     }
 
     @Override
     public String extractJwtId(String tokenValue) {
-        if (selectedValidator == null) {
-            throw new IllegalStateException("TokenValidator 未初始化");
+        strategyLock.readLock().lock();
+        try {
+            if (selectedValidator == null) {
+                throw new IllegalStateException("TokenValidator 未初始化");
+            }
+            return selectedValidator.extractJwtId(tokenValue);
+        } finally {
+            strategyLock.readLock().unlock();
         }
-        return selectedValidator.extractJwtId(tokenValue);
     }
 
     public TokenGenerator getSelectedGenerator() {
-        return selectedGenerator;
+        strategyLock.readLock().lock();
+        try {
+            return selectedGenerator;
+        } finally {
+            strategyLock.readLock().unlock();
+        }
     }
 
     public TokenValidator getSelectedValidator() {
-        return selectedValidator;
+        strategyLock.readLock().lock();
+        try {
+            return selectedValidator;
+        } finally {
+            strategyLock.readLock().unlock();
+        }
     }
 }
