@@ -15,6 +15,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 
 import java.time.LocalDateTime;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
@@ -151,7 +152,7 @@ class TokenLinkTraceTest {
         assertEquals(jwtIdA, chain.getJwtId());
         assertEquals(2, chain.getChildren().size(), "根节点应该有两个子节点");
 
-        List<String> childJwtIds = List.of(
+        List<String> childJwtIds = Arrays.asList(
                 chain.getChildren().get(0).getJwtId(),
                 chain.getChildren().get(1).getJwtId()
         );
