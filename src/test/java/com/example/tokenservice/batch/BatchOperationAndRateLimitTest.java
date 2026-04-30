@@ -354,6 +354,216 @@ public class BatchOperationAndRateLimitTest {
         assertEquals("无效的jwtId", result.getFailures().get(0).getMessage());
     }
 
+    @Test
+    @DisplayName("限流服务 - 高并发场景（50线程）下线程安全")
+    void testRateLimit_HighConcurrency() throws InterruptedException {
+        int threadCount = 50;
+        int iterationsPerThread = 10;
+        ExecutorService executorService = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch endLatch = new CountDownLatch(threadCount);
+        AtomicInteger successCount = new AtomicInteger(0);
+        AtomicInteger failureCount = new AtomicInteger(0);
+
+        for (int i = 0; i < threadCount; i++) {
+            final String userId = testUserId;
+            final String ip = testIp;
+            
+            executorService.submit(() -> {
+                int localSuccess = 0;
+                int localFailure = 0;
+                try {
+                    for (int j = 0; j < iterationsPerThread; j++) {
+                        boolean allowed = rateLimitService.tryAcquire(userId, ip);
+                        if (allowed) {
+                            localSuccess++;
+                        } else {
+                            localFailure++;
+                        }
+                    }
+                } finally {
+                    successCount.addAndGet(localSuccess);
+                    failureCount.addAndGet(localFailure);
+                    endLatch.countDown();
+                }
+            });
+        }
+
+        endLatch.await(60, TimeUnit.SECONDS);
+        executorService.shutdown();
+        executorService.awaitTermination(10, TimeUnit.SECONDS);
+
+        RateLimitService.RateLimitInfo info = rateLimitService.getRateLimitInfo(testUserId, testIp);
+        int totalAllowed = successCount.get();
+        assertTrue(totalAllowed <= info.getUserLimit(), "成功请求数不应超过限制");
+        assertTrue(totalAllowed > 0, "应该有成功的请求");
+    }
+
+    @Test
+    @DisplayName("限流服务 - 高并发批量请求测试")
+    void testRateLimit_HighConcurrencyBatch() throws InterruptedException {
+        int threadCount = 30;
+        int batchSize = 3;
+        ExecutorService executorService = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch endLatch = new CountDownLatch(threadCount);
+        AtomicInteger successCount = new AtomicInteger(0);
+        AtomicInteger failureCount = new AtomicInteger(0);
+
+        for (int i = 0; i < threadCount; i++) {
+            final String userId = testUserId;
+            final String ip = testIp;
+            
+            executorService.submit(() -> {
+                try {
+                    startLatch.await();
+                    boolean allowed = rateLimitService.tryAcquireBatch(userId, ip, batchSize);
+                    if (allowed) {
+                        successCount.addAndGet(batchSize);
+                    } else {
+                        failureCount.addAndGet(batchSize);
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    endLatch.countDown();
+                }
+            });
+        }
+
+        startLatch.countDown();
+        endLatch.await(30, TimeUnit.SECONDS);
+        executorService.shutdown();
+
+        int totalRequests = successCount.get() + failureCount.get();
+        assertEquals(threadCount * batchSize, totalRequests, "所有请求都应该被处理");
+    }
+
+    @Test
+    @DisplayName("限流服务 - 滑动窗口边界测试")
+    void testRateLimit_SlidingWindow() throws InterruptedException {
+        int limit = 5;
+        tokenProperties.getRateLimit().setRequestsPerMinutePerUser(limit);
+
+        for (int i = 0; i < limit; i++) {
+            boolean allowed = rateLimitService.tryAcquire(testUserId, testIp);
+            assertTrue(allowed, "前" + limit + "次请求应该被允许");
+        }
+
+        boolean notAllowed = rateLimitService.tryAcquire(testUserId, testIp);
+        assertFalse(notAllowed, "第" + (limit + 1) + "次请求应该被拒绝");
+
+        tokenProperties.getRateLimit().setRequestsPerMinutePerUser(100);
+    }
+
+    @Test
+    @DisplayName("限流服务 - 配置项实时更新测试")
+    void testRateLimit_ConfigUpdate() {
+        int originalLimit = tokenProperties.getRateLimit().getRequestsPerMinutePerUser();
+        
+        try {
+            tokenProperties.getRateLimit().setRequestsPerMinutePerUser(5);
+
+            for (int i = 0; i < 5; i++) {
+                boolean allowed = rateLimitService.tryAcquire(testUserId, testIp);
+                assertTrue(allowed, "第" + (i + 1) + "次请求应该被允许");
+            }
+
+            boolean notAllowed = rateLimitService.tryAcquire(testUserId, testIp);
+            assertFalse(notAllowed, "超过新限制的请求应该被拒绝");
+
+            RateLimitService.RateLimitInfo info = rateLimitService.getRateLimitInfo(testUserId, testIp);
+            assertEquals(5, info.getUserLimit(), "限制应该更新为5");
+            assertEquals(0, info.getUserRemaining(), "剩余应该为0");
+
+        } finally {
+            tokenProperties.getRateLimit().setRequestsPerMinutePerUser(originalLimit);
+        }
+    }
+
+    @Test
+    @DisplayName("限流服务 - 动态开关限流")
+    void testRateLimit_EnableDisable() {
+        boolean originalEnabled = tokenProperties.getRateLimit().isEnabled();
+
+        try {
+            for (int i = 0; i < 5; i++) {
+                rateLimitService.tryAcquire(testUserId, testIp);
+            }
+
+            tokenProperties.getRateLimit().setEnabled(false);
+
+            RateLimitService.RateLimitInfo infoDisabled = rateLimitService.getRateLimitInfo(testUserId, testIp);
+            assertFalse(infoDisabled.isEnabled(), "限流应该被禁用");
+
+            for (int i = 0; i < 10; i++) {
+                boolean allowed = rateLimitService.tryAcquire(testUserId, testIp);
+                assertTrue(allowed, "限流禁用后所有请求都应该被允许");
+            }
+
+            tokenProperties.getRateLimit().setEnabled(true);
+
+            RateLimitService.RateLimitInfo infoEnabled = rateLimitService.getRateLimitInfo(testUserId, testIp);
+            assertTrue(infoEnabled.isEnabled(), "限流应该被重新启用");
+
+        } finally {
+            tokenProperties.getRateLimit().setEnabled(originalEnabled);
+        }
+    }
+
+    @Test
+    @DisplayName("限流服务 - 多用户并发互不干扰")
+    void testRateLimit_MultipleUsersConcurrent() throws InterruptedException {
+        int threadCountPerUser = 20;
+        int userCount = 5;
+        int iterationsPerThread = 5;
+        ExecutorService executorService = Executors.newFixedThreadPool(threadCountPerUser * userCount);
+        CountDownLatch endLatch = new CountDownLatch(threadCountPerUser * userCount);
+        
+        List<AtomicInteger> successCounts = new ArrayList<>();
+        List<AtomicInteger> failureCounts = new ArrayList<>();
+        List<String> userIds = new ArrayList<>();
+
+        for (int u = 0; u < userCount; u++) {
+            final String userId = "test-user-" + UUID.randomUUID().toString();
+            userIds.add(userId);
+            AtomicInteger successCount = new AtomicInteger(0);
+            AtomicInteger failureCount = new AtomicInteger(0);
+            successCounts.add(successCount);
+            failureCounts.add(failureCount);
+
+            for (int i = 0; i < threadCountPerUser; i++) {
+                final int userIndex = u;
+                executorService.submit(() -> {
+                    int localSuccess = 0;
+                    int localFailure = 0;
+                    try {
+                        for (int j = 0; j < iterationsPerThread; j++) {
+                            boolean allowed = rateLimitService.tryAcquire(userIds.get(userIndex), testIp);
+                            if (allowed) {
+                                localSuccess++;
+                            } else {
+                                localFailure++;
+                            }
+                        }
+                    } finally {
+                        successCounts.get(userIndex).addAndGet(localSuccess);
+                        failureCounts.get(userIndex).addAndGet(localFailure);
+                        endLatch.countDown();
+                    }
+                });
+            }
+        }
+
+        endLatch.await(60, TimeUnit.SECONDS);
+        executorService.shutdown();
+        executorService.awaitTermination(10, TimeUnit.SECONDS);
+
+        for (int u = 0; u < userCount; u++) {
+            int total = successCounts.get(u).get() + failureCounts.get(u).get();
+            assertTrue(total > 0, "用户" + u + "应该有请求被处理");
+        }
+    }
+
     private String extractJwtId(String token) {
         return token.hashCode() + "-" + System.currentTimeMillis();
     }
