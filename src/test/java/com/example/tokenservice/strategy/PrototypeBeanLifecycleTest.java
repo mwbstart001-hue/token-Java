@@ -31,6 +31,9 @@ class PrototypeBeanLifecycleTest {
     private ApplicationContext applicationContext;
 
     @Autowired
+    private TokenStrategyFactory strategyFactory;
+
+    @Autowired
     private TokenProperties tokenProperties;
 
     @Autowired
@@ -120,7 +123,7 @@ class PrototypeBeanLifecycleTest {
     @Test
     void testTokenStrategySelector_GetNewGenerator_ReturnsNewInstance() {
         TokenStrategySelector selector = new TokenStrategySelector(
-            applicationContext, tokenProperties, revocationService, performanceMonitor
+            applicationContext, strategyFactory, tokenProperties, revocationService, performanceMonitor
         );
         selector.init();
 
@@ -136,7 +139,7 @@ class PrototypeBeanLifecycleTest {
     @Test
     void testTokenStrategySelector_GetNewValidator_ReturnsNewInstance() {
         TokenStrategySelector selector = new TokenStrategySelector(
-            applicationContext, tokenProperties, revocationService, performanceMonitor
+            applicationContext, strategyFactory, tokenProperties, revocationService, performanceMonitor
         );
         selector.init();
 
@@ -152,7 +155,7 @@ class PrototypeBeanLifecycleTest {
     @Test
     void testTokenStrategySelector_Generate_UsesPrototypeBean() {
         TokenStrategySelector selector = new TokenStrategySelector(
-            applicationContext, tokenProperties, revocationService, performanceMonitor
+            applicationContext, strategyFactory, tokenProperties, revocationService, performanceMonitor
         );
         selector.init();
 
@@ -165,7 +168,7 @@ class PrototypeBeanLifecycleTest {
     @Test
     void testTokenStrategySelector_SwitchStrategy_GetNewBean() {
         TokenStrategySelector selector = new TokenStrategySelector(
-            applicationContext, tokenProperties, revocationService, performanceMonitor
+            applicationContext, strategyFactory, tokenProperties, revocationService, performanceMonitor
         );
         selector.init();
 
@@ -183,7 +186,7 @@ class PrototypeBeanLifecycleTest {
     @Test
     void testPrototypeBean_GenerateMultipleTokens_Independent() {
         TokenStrategySelector selector = new TokenStrategySelector(
-            applicationContext, tokenProperties, revocationService, performanceMonitor
+            applicationContext, strategyFactory, tokenProperties, revocationService, performanceMonitor
         );
         selector.init();
 
@@ -214,7 +217,7 @@ class PrototypeBeanLifecycleTest {
     @Test
     void testPrototypeBean_ConcurrentGenerate_ThreadSafe() throws InterruptedException {
         TokenStrategySelector selector = new TokenStrategySelector(
-            applicationContext, tokenProperties, revocationService, performanceMonitor
+            applicationContext, strategyFactory, tokenProperties, revocationService, performanceMonitor
         );
         selector.init();
 
@@ -267,7 +270,7 @@ class PrototypeBeanLifecycleTest {
         tokenProperties.setAlgorithm("RS256");
 
         TokenStrategySelector selector = new TokenStrategySelector(
-            applicationContext, tokenProperties, revocationService, performanceMonitor
+            applicationContext, strategyFactory, tokenProperties, revocationService, performanceMonitor
         );
         selector.init();
 
@@ -281,7 +284,7 @@ class PrototypeBeanLifecycleTest {
         tokenProperties.getStrategy().setType("SIMPLE");
 
         TokenStrategySelector selector = new TokenStrategySelector(
-            applicationContext, tokenProperties, revocationService, performanceMonitor
+            applicationContext, strategyFactory, tokenProperties, revocationService, performanceMonitor
         );
         selector.init();
 
@@ -296,7 +299,7 @@ class PrototypeBeanLifecycleTest {
         tokenProperties.setAlgorithm("RS256");
 
         TokenStrategySelector selector = new TokenStrategySelector(
-            applicationContext, tokenProperties, revocationService, performanceMonitor
+            applicationContext, strategyFactory, tokenProperties, revocationService, performanceMonitor
         );
         selector.init();
 
@@ -315,7 +318,7 @@ class PrototypeBeanLifecycleTest {
     @Test
     void testPrototypeBean_Validate_UsesNewInstance() {
         TokenStrategySelector selector = new TokenStrategySelector(
-            applicationContext, tokenProperties, revocationService, performanceMonitor
+            applicationContext, strategyFactory, tokenProperties, revocationService, performanceMonitor
         );
         selector.init();
 
