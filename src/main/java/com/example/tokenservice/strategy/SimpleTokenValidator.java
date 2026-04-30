@@ -41,12 +41,12 @@ public class SimpleTokenValidator implements TokenValidator {
 
         try {
             String[] parts = tokenValue.split("-");
-            if (parts.length < 3) {
+            if (parts.length < 4) {
                 return ValidationResult.invalid(ValidationStatus.MALFORMED, "Token 格式错误（分段不足）");
             }
 
-            String encodedPayload = parts[1];
-            String signature = parts[2];
+            String encodedPayload = parts[2];
+            String signature = parts[3];
 
             String payload = new String(Base64.getDecoder().decode(encodedPayload), StandardCharsets.UTF_8);
             String[] payloadParts = payload.split("\\|");
