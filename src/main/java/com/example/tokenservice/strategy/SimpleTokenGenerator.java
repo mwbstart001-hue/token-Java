@@ -5,6 +5,7 @@ import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Scope;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
@@ -16,7 +17,12 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * Simple Token 生成策略
+ * 使用 @Scope("prototype") 每次获取都创建新实例，避免单例模式下的并发安全隐患
+ */
 @Component("simpleTokenGenerator")
+@Scope("prototype")
 public class SimpleTokenGenerator implements TokenGenerator {
 
     private static final Logger log = LoggerFactory.getLogger(SimpleTokenGenerator.class);

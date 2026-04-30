@@ -4,7 +4,7 @@ import com.example.tokenservice.config.JwtKeyManager;
 import io.jsonwebtoken.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Scope;
 import org.springframework.stereotype.Component;
 
 import java.security.PublicKey;
@@ -17,13 +17,13 @@ import java.security.PublicKey;
  * - 使用公钥验证签名
  * - 安全性更高，公钥可以公开分发
  * 
- * 使用条件：
- * - 配置 token.algorithm = "RS256" (默认)
+ * 设计模式：策略模式 + 原型作用域
  * 
- * 设计模式：策略模式 + 条件化 Bean
+ * 使用 @Scope("prototype") 每次获取都创建新实例，避免单例模式下的并发安全隐患
+ * 使用 Bean 名称 "rs256TokenValidator" 便于动态获取
  */
-@Component
-@ConditionalOnProperty(name = "token.algorithm", havingValue = "RS256", matchIfMissing = true)
+@Component("rs256TokenValidator")
+@Scope("prototype")
 public class RS256TokenValidator implements TokenValidator {
 
     private static final Logger log = LoggerFactory.getLogger(RS256TokenValidator.class);
