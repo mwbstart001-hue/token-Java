@@ -154,6 +154,9 @@ public class TokenStatisticsService {
     /**
      * 获取Token链路追踪
      * 以指定的jwtId为根节点，递归构建完整的Token生命周期链路
+     * 包含：
+     * - 该 Token 的所有操作记录（生成/续签 + 验证 + 作废）
+     * - 续签产生的新 Token 的完整链路
      * 
      * @param jwtId 根节点的JWT ID
      * @return Token链路树形结构，如果未找到则返回null
@@ -162,30 +165,33 @@ public class TokenStatisticsService {
     public TokenLinkNode getTokenChain(String jwtId) {
         log.debug("查询Token链路 - jwtId: {}", jwtId);
 
-        List<TokenStatistics> rootRecords = statisticsRepository.findByJwtId(jwtId);
-        if (rootRecords == null || rootRecords.isEmpty()) {
+        List<TokenStatistics> allRecords = statisticsRepository.findByJwtId(jwtId);
+        if (allRecords == null || allRecords.isEmpty()) {
             log.warn("未找到Token记录 - jwtId: {}", jwtId);
             return null;
         }
 
-        TokenStatistics rootRecord = findRootRecord(rootRecords, jwtId);
-        if (rootRecord == null) {
-            log.warn("未找到有效的根节点记录 - jwtId: {}", jwtId);
+        TokenStatistics mainRecord = findMainRecord(allRecords, jwtId);
+        if (mainRecord == null) {
+            log.warn("未找到有效的主节点记录 - jwtId: {}", jwtId);
             return null;
         }
 
-        TokenLinkNode rootNode = buildLinkNode(rootRecord);
-        buildChildrenChain(rootNode);
+        TokenLinkNode rootNode = buildLinkNode(mainRecord);
+        
+        buildTokenOperations(rootNode, allRecords);
+        
+        buildRenewedChildren(rootNode);
 
         log.debug("Token链路构建完成 - jwtId: {}", jwtId);
         return rootNode;
     }
 
     /**
-     * 查找根节点记录
+     * 查找主节点记录
      * 优先选择 GENERATE 或 RENEW 类型的记录（因为这些是创建型操作）
      */
-    private TokenStatistics findRootRecord(List<TokenStatistics> records, String jwtId) {
+    private TokenStatistics findMainRecord(List<TokenStatistics> records, String jwtId) {
         TokenStatistics generateRecord = records.stream()
                 .filter(r -> TokenOperationType.GENERATE == r.getOperationType())
                 .findFirst()
@@ -206,20 +212,43 @@ public class TokenStatisticsService {
     }
 
     /**
-     * 递归构建子节点链路
+     * 构建同一 Token 的所有操作记录
+     * 将非主节点的操作（VALIDATE、INVALIDATE）添加到 operations 列表
      */
-    private void buildChildrenChain(TokenLinkNode parentNode) {
+    private void buildTokenOperations(TokenLinkNode mainNode, List<TokenStatistics> allRecords) {
+        TokenOperationType mainType = mainNode.getOperationType();
+        
+        for (TokenStatistics record : allRecords) {
+            if (record.getOperationType() != mainType) {
+                TokenLinkNode operationNode = buildLinkNode(record);
+                mainNode.addOperation(operationNode);
+            }
+        }
+    }
+
+    /**
+     * 构建续签产生的子节点链路
+     * 找到所有以当前 Token 为 parentJwtId 的记录
+     */
+    private void buildRenewedChildren(TokenLinkNode parentNode) {
         List<TokenStatistics> childRecords = statisticsRepository.findByParentJwtIdOrderByOperationTimeAsc(parentNode.getJwtId());
         
         for (TokenStatistics childRecord : childRecords) {
-            TokenLinkNode childNode = buildLinkNode(childRecord);
-            parentNode.addChild(childNode);
-            buildChildrenChain(childNode);
+            List<TokenStatistics> childAllRecords = statisticsRepository.findByJwtId(childRecord.getJwtId());
+            
+            TokenStatistics childMainRecord = findMainRecord(childAllRecords, childRecord.getJwtId());
+            if (childMainRecord != null) {
+                TokenLinkNode childNode = buildLinkNode(childMainRecord);
+                buildTokenOperations(childNode, childAllRecords);
+                parentNode.addChild(childNode);
+                buildRenewedChildren(childNode);
+            }
         }
     }
 
     /**
      * 将 TokenStatistics 转换为 TokenLinkNode
+     * 包含所有审计字段
      */
     private TokenLinkNode buildLinkNode(TokenStatistics statistics) {
         TokenLinkNode node = new TokenLinkNode();
@@ -230,6 +259,30 @@ public class TokenStatisticsService {
         node.setUserId(statistics.getUserId());
         node.setSuccess(statistics.isSuccess());
         node.setFailureReason(statistics.getFailureReason());
+        node.setSourceIp(statistics.getSourceIp());
+        node.setUserAgent(statistics.getUserAgent());
+        
+        String description = buildOperationDescription(statistics);
+        node.setOperationDescription(description);
+        
         return node;
+    }
+
+    /**
+     * 构建操作描述
+     */
+    private String buildOperationDescription(TokenStatistics statistics) {
+        switch (statistics.getOperationType()) {
+            case GENERATE:
+                return "Token 生成";
+            case RENEW:
+                return "Token 续签，原 Token: " + statistics.getParentJwtId();
+            case VALIDATE:
+                return "Token 验证，结果: " + (statistics.isSuccess() ? "成功" : "失败");
+            case INVALIDATE:
+                return "Token 作废";
+            default:
+                return statistics.getOperationType().toString();
+        }
     }
 }

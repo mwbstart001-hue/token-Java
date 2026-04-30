@@ -19,9 +19,14 @@ public class TokenLinkNode {
     private String userId;
     private boolean success;
     private String failureReason;
+    private String sourceIp;
+    private String userAgent;
+    private String operationDescription;
+    private List<TokenLinkNode> operations;
     private List<TokenLinkNode> children;
 
     public TokenLinkNode() {
+        this.operations = new ArrayList<>();
         this.children = new ArrayList<>();
     }
 
@@ -29,6 +34,7 @@ public class TokenLinkNode {
         this.jwtId = jwtId;
         this.operationType = operationType;
         this.operationTime = operationTime;
+        this.operations = new ArrayList<>();
         this.children = new ArrayList<>();
     }
 
@@ -88,12 +94,51 @@ public class TokenLinkNode {
         this.failureReason = failureReason;
     }
 
+    public String getSourceIp() {
+        return sourceIp;
+    }
+
+    public void setSourceIp(String sourceIp) {
+        this.sourceIp = sourceIp;
+    }
+
+    public String getUserAgent() {
+        return userAgent;
+    }
+
+    public void setUserAgent(String userAgent) {
+        this.userAgent = userAgent;
+    }
+
+    public String getOperationDescription() {
+        return operationDescription;
+    }
+
+    public void setOperationDescription(String operationDescription) {
+        this.operationDescription = operationDescription;
+    }
+
+    public List<TokenLinkNode> getOperations() {
+        return operations;
+    }
+
+    public void setOperations(List<TokenLinkNode> operations) {
+        this.operations = operations;
+    }
+
     public List<TokenLinkNode> getChildren() {
         return children;
     }
 
     public void setChildren(List<TokenLinkNode> children) {
         this.children = children;
+    }
+
+    public void addOperation(TokenLinkNode operation) {
+        if (this.operations == null) {
+            this.operations = new ArrayList<>();
+        }
+        this.operations.add(operation);
     }
 
     public void addChild(TokenLinkNode child) {
