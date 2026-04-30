@@ -22,6 +22,7 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
     private static final Logger log = LoggerFactory.getLogger(TokenStrategySelector.class);
 
     private final ApplicationContext applicationContext;
+    private final TokenStrategyFactory strategyFactory;
     private final TokenProperties tokenProperties;
     private final TokenRevocationService revocationService;
     private final TokenPerformanceMonitor performanceMonitor;
@@ -31,20 +32,13 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
     private String currentStrategyType;
     private String currentAlgorithm;
 
-    private static final String BEAN_SIMPLE_GENERATOR = "simpleTokenGenerator";
-    private static final String BEAN_SIMPLE_VALIDATOR = "simpleTokenValidator";
-    private static final String BEAN_RS256_GENERATOR = "rs256TokenGenerator";
-    private static final String BEAN_RS256_VALIDATOR = "rs256TokenValidator";
-    private static final String BEAN_HS256_GENERATOR = "hs256TokenGenerator";
-    private static final String BEAN_HS256_VALIDATOR = "hs256TokenValidator";
-    private static final String BEAN_JWT_GENERATOR = "jwtTokenGenerator";
-    private static final String BEAN_JWT_VALIDATOR = "jwtTokenValidator";
-
     public TokenStrategySelector(ApplicationContext applicationContext,
+                                   TokenStrategyFactory strategyFactory,
                                    TokenProperties tokenProperties,
                                    TokenRevocationService revocationService,
                                    TokenPerformanceMonitor performanceMonitor) {
         this.applicationContext = applicationContext;
+        this.strategyFactory = strategyFactory;
         this.tokenProperties = tokenProperties;
         this.revocationService = revocationService;
         this.performanceMonitor = performanceMonitor;
@@ -52,7 +46,7 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
 
     @PostConstruct
     public void init() {
-        log.info("初始化 Token 策略选择器（原型 Bean 模式）...");
+        log.info("初始化 Token 策略选择器（工厂模式 + @Lookup 原型 Bean）...");
         
         String strategyType = tokenProperties.getStrategy().getType();
         String algorithm = tokenProperties.getAlgorithm();
@@ -95,39 +89,35 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
     }
 
     private String getGeneratorBeanName() {
-        if ("SIMPLE".equals(currentStrategyType)) {
-            return BEAN_SIMPLE_GENERATOR;
-        } else if ("RS256".equals(currentAlgorithm)) {
-            return BEAN_RS256_GENERATOR;
-        } else if ("HS256".equals(currentAlgorithm)) {
-            return BEAN_HS256_GENERATOR;
-        } else {
-            return BEAN_JWT_GENERATOR;
-        }
+        return strategyFactory.getStrategyType(currentStrategyType, currentAlgorithm)
+                .getGeneratorBeanName();
     }
 
     private String getValidatorBeanName() {
-        if ("SIMPLE".equals(currentStrategyType)) {
-            return BEAN_SIMPLE_VALIDATOR;
-        } else if ("RS256".equals(currentAlgorithm)) {
-            return BEAN_RS256_VALIDATOR;
-        } else if ("HS256".equals(currentAlgorithm)) {
-            return BEAN_HS256_VALIDATOR;
-        } else {
-            return BEAN_JWT_VALIDATOR;
-        }
+        return strategyFactory.getStrategyType(currentStrategyType, currentAlgorithm)
+                .getValidatorBeanName();
     }
 
     public TokenGenerator getNewGenerator() {
-        String beanName = getGeneratorBeanName();
-        log.debug("获取新的原型 Generator 实例: {}", beanName);
-        return applicationContext.getBean(beanName, TokenGenerator.class);
+        strategyLock.readLock().lock();
+        try {
+            log.debug("通过工厂获取新的原型 Generator 实例 - 类型: {}, 算法: {}", 
+                    currentStrategyType, currentAlgorithm);
+            return strategyFactory.getGenerator(currentStrategyType, currentAlgorithm);
+        } finally {
+            strategyLock.readLock().unlock();
+        }
     }
 
     public TokenValidator getNewValidator() {
-        String beanName = getValidatorBeanName();
-        log.debug("获取新的原型 Validator 实例: {}", beanName);
-        return applicationContext.getBean(beanName, TokenValidator.class);
+        strategyLock.readLock().lock();
+        try {
+            log.debug("通过工厂获取新的原型 Validator 实例 - 类型: {}, 算法: {}", 
+                    currentStrategyType, currentAlgorithm);
+            return strategyFactory.getValidator(currentStrategyType, currentAlgorithm);
+        } finally {
+            strategyLock.readLock().unlock();
+        }
     }
 
     public boolean switchStrategy(String strategyType, String algorithm) {
@@ -253,5 +243,9 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
 
     public TokenValidator getSelectedValidator() {
         return getNewValidator();
+    }
+
+    public TokenStrategyFactory getStrategyFactory() {
+        return strategyFactory;
     }
 }
