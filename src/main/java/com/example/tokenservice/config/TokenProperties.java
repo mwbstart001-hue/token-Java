@@ -69,6 +69,11 @@ public class TokenProperties {
      */
     private TokenStrategy strategy = new TokenStrategy();
 
+    /**
+     * 限流保护配置
+     */
+    private RateLimit rateLimit = new RateLimit();
+
     public String getAlgorithm() {
         return algorithm;
     }
@@ -155,6 +160,14 @@ public class TokenProperties {
 
     public void setStrategy(TokenStrategy strategy) {
         this.strategy = strategy;
+    }
+
+    public RateLimit getRateLimit() {
+        return rateLimit;
+    }
+
+    public void setRateLimit(RateLimit rateLimit) {
+        this.rateLimit = rateLimit;
     }
 
     /**
@@ -334,6 +347,64 @@ public class TokenProperties {
 
         public void setSimplePrefix(String simplePrefix) {
             this.simplePrefix = simplePrefix;
+        }
+    }
+
+    /**
+     * 限流保护配置类
+     */
+    public static class RateLimit {
+
+        /**
+         * 是否启用限流保护
+         */
+        private boolean enabled = true;
+
+        /**
+         * 每用户每分钟最大请求数（Token生成）
+         */
+        private int requestsPerMinutePerUser = 100;
+
+        /**
+         * 每IP每分钟最大请求数（Token生成）
+         */
+        private int requestsPerMinutePerIp = 500;
+
+        /**
+         * 批量生成最大数量限制
+         */
+        private int maxBatchSize = 50;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public int getRequestsPerMinutePerUser() {
+            return requestsPerMinutePerUser;
+        }
+
+        public void setRequestsPerMinutePerUser(int requestsPerMinutePerUser) {
+            this.requestsPerMinutePerUser = requestsPerMinutePerUser;
+        }
+
+        public int getRequestsPerMinutePerIp() {
+            return requestsPerMinutePerIp;
+        }
+
+        public void setRequestsPerMinutePerIp(int requestsPerMinutePerIp) {
+            this.requestsPerMinutePerIp = requestsPerMinutePerIp;
+        }
+
+        public int getMaxBatchSize() {
+            return maxBatchSize;
+        }
+
+        public void setMaxBatchSize(int maxBatchSize) {
+            this.maxBatchSize = maxBatchSize;
         }
     }
 }

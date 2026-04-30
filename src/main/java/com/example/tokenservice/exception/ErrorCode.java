@@ -27,6 +27,8 @@ public enum ErrorCode {
 
     PARAM_VALIDATION_FAILED(3001, "参数校验失败"),
 
+    TOO_MANY_REQUESTS(429, "请求频率超过限制"),
+
     SYSTEM_ERROR(9001, "系统内部错误");
 
     private final int code;

@@ -2,6 +2,7 @@ package com.example.tokenservice.service;
 
 import com.example.tokenservice.config.JwtKeyManager;
 import com.example.tokenservice.dispatcher.TokenOperationDispatcher;
+import com.example.tokenservice.dto.BatchGenerateResponse;
 import com.example.tokenservice.dto.TokenInfo;
 import com.example.tokenservice.model.TokenStore;
 import io.jsonwebtoken.Claims;
@@ -9,6 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -197,4 +199,36 @@ public class TokenService {
         tokenStore.clearExpired();
         log.info("过期Token清理完成");
     }
+
+    /**
+     * 批量生成Token
+     * 
+     * @param userId 用户唯一标识
+     * @param subject Token主题/用途（可选）
+     * @param expireSeconds 过期时间（秒），null则使用默认值
+     * @param count 生成数量
+     * @return 批量生成结果
+     */
+    public BatchGenerateResponse batchGenerateTokens(String userId, String subject, 
+                                                      Long expireSeconds, int count) {
+        log.info("开始批量生成Token - userId: {}, count: {}", userId, count);
+        
+        BatchGenerateResponse response = new BatchGenerateResponse();
+        
+        for (int i = 0; i < count; i++) {
+            try {
+                String token = dispatcher.generateToken(userId, subject, expireSeconds);
+                response.addSuccessToken(token);
+                log.debug("批量生成Token成功 - 索引: {}", i);
+            } catch (Exception e) {
+                log.error("批量生成Token失败 - 索引: {}, 错误: {}", i, e.getMessage());
+                response.addFailure(i, e.getMessage());
+            }
+        }
+        
+        log.info("批量生成Token完成 - 成功: {}, 失败: {}", 
+                response.getSuccessCount(), response.getFailureCount());
+        return response;
+    }
+
 }

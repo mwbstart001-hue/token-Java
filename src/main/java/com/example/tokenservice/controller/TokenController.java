@@ -1,13 +1,21 @@
 package com.example.tokenservice.controller;
 
 import com.example.tokenservice.dto.ApiResponse;
+import com.example.tokenservice.dto.BatchGenerateRequest;
+import com.example.tokenservice.dto.BatchGenerateResponse;
+import com.example.tokenservice.dto.BatchRevokeRequest;
 import com.example.tokenservice.dto.TokenGenerateRequest;
 import com.example.tokenservice.dto.TokenInfo;
 import com.example.tokenservice.dto.TokenRenewRequest;
+import com.example.tokenservice.ratelimit.RateLimitService;
+import com.example.tokenservice.revocation.TokenRevocationService;
 import com.example.tokenservice.service.TokenService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
+import javax.servlet.http.HttpServletRequest;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -16,16 +24,33 @@ import java.util.Optional;
 @RequestMapping("/api/token")
 public class TokenController {
 
-    private final TokenService tokenService;
+    private static final Logger log = LoggerFactory.getLogger(TokenController.class);
 
-    public TokenController(TokenService tokenService) {
+    private final TokenService tokenService;
+    private final RateLimitService rateLimitService;
+    private final TokenRevocationService tokenRevocationService;
+
+    public TokenController(TokenService tokenService,
+                           RateLimitService rateLimitService,
+                           TokenRevocationService tokenRevocationService) {
         this.tokenService = tokenService;
+        this.rateLimitService = rateLimitService;
+        this.tokenRevocationService = tokenRevocationService;
     }
 
     @PostMapping("/generate")
-    public ApiResponse<Map<String, String>> generateToken(@Validated @RequestBody TokenGenerateRequest request) {
+    public ApiResponse<Map<String, String>> generateToken(@Validated @RequestBody TokenGenerateRequest request,
+                                                            HttpServletRequest httpRequest) {
+        String userId = request.getUserId();
+        String clientIp = getClientIp(httpRequest);
+        
+        boolean allowed = rateLimitService.tryAcquire(userId, clientIp);
+        if (!allowed) {
+            return ApiResponse.tooManyRequests("请求频率超过限制，请稍后重试");
+        }
+        
         String token = tokenService.generateToken(
-                request.getUserId(),
+                userId,
                 request.getSubject(),
                 request.getExpireSeconds()
         );
@@ -92,5 +117,118 @@ public class TokenController {
         } else {
             return ApiResponse.error("Token 无效或已过期");
         }
+    }
+
+    @PostMapping("/batch/generate")
+    public ApiResponse<BatchGenerateResponse> batchGenerateTokens(
+            @Validated @RequestBody BatchGenerateRequest request,
+            HttpServletRequest httpRequest) {
+        
+        String userId = request.getUserId();
+        String clientIp = getClientIp(httpRequest);
+        int count = request.getCount();
+        
+        boolean allowed = rateLimitService.tryAcquireBatch(userId, clientIp, count);
+        if (!allowed) {
+            return ApiResponse.tooManyRequests("批量生成请求频率超过限制，请稍后重试");
+        }
+        
+        BatchGenerateResponse response = tokenService.batchGenerateTokens(
+                userId,
+                request.getSubject(),
+                request.getExpireSeconds(),
+                count
+        );
+        
+        return ApiResponse.success("批量生成完成", response);
+    }
+
+    @PostMapping("/batch/revoke")
+    public ApiResponse<Map<String, Object>> batchRevokeTokens(
+            @RequestBody BatchRevokeRequest request) {
+        
+        Map<String, Object> result = new HashMap<>();
+        
+        TokenRevocationService.BatchRevokeResult jwtIdResult = null;
+        TokenRevocationService.BatchRevokeResult tokenValueResult = null;
+        
+        if (request.getJwtIds() != null && !request.getJwtIds().isEmpty()) {
+            jwtIdResult = tokenRevocationService.batchRevokeByJwtIds(
+                    request.getJwtIds(), 
+                    request.getReason()
+            );
+        }
+        
+        if (request.getTokenValues() != null && !request.getTokenValues().isEmpty()) {
+            tokenValueResult = tokenRevocationService.batchRevokeByTokenValues(
+                    request.getTokenValues(), 
+                    request.getReason()
+            );
+        }
+        
+        int totalSuccess = 0;
+        int totalFailure = 0;
+        
+        if (jwtIdResult != null) {
+            totalSuccess += jwtIdResult.getSuccessCount();
+            totalFailure += jwtIdResult.getFailureCount();
+            result.put("jwtIdResult", jwtIdResult);
+        }
+        
+        if (tokenValueResult != null) {
+            totalSuccess += tokenValueResult.getSuccessCount();
+            totalFailure += tokenValueResult.getFailureCount();
+            result.put("tokenValueResult", tokenValueResult);
+        }
+        
+        result.put("totalSuccess", totalSuccess);
+        result.put("totalFailure", totalFailure);
+        
+        return ApiResponse.success("批量吊销完成", result);
+    }
+
+    @GetMapping("/rate-limit/info")
+    public ApiResponse<Map<String, Object>> getRateLimitInfo(
+            @RequestParam(value = "userId", required = false) String userId,
+            HttpServletRequest httpRequest) {
+        
+        String clientIp = getClientIp(httpRequest);
+        RateLimitService.RateLimitInfo info = rateLimitService.getRateLimitInfo(userId, clientIp);
+        
+        Map<String, Object> result = new HashMap<>();
+        result.put("enabled", info.isEnabled());
+        result.put("userLimit", info.getUserLimit());
+        result.put("userRemaining", info.getUserRemaining());
+        result.put("ipLimit", info.getIpLimit());
+        result.put("ipRemaining", info.getIpRemaining());
+        result.put("maxBatchSize", info.getMaxBatchSize());
+        result.put("clientIp", clientIp);
+        
+        return ApiResponse.success("获取限流信息成功", result);
+    }
+
+    private String getClientIp(HttpServletRequest request) {
+        String ip = request.getHeader("X-Forwarded-For");
+        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
+            ip = request.getHeader("Proxy-Client-IP");
+        }
+        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
+            ip = request.getHeader("WL-Proxy-Client-IP");
+        }
+        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
+            ip = request.getHeader("HTTP_CLIENT_IP");
+        }
+        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
+            ip = request.getHeader("HTTP_X_FORWARDED_FOR");
+        }
+        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
+            ip = request.getRemoteAddr();
+        }
+        
+        if (ip != null && ip.contains(",")) {
+            ip = ip.split(",")[0].trim();
+        }
+        
+        return ip;
     }
 }
