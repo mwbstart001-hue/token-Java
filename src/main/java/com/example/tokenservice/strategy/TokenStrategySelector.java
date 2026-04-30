@@ -1,6 +1,8 @@
 package com.example.tokenservice.strategy;
 
 import com.example.tokenservice.config.TokenProperties;
+import com.example.tokenservice.monitor.TokenPerformanceMonitor;
+import com.example.tokenservice.revocation.TokenRevocationService;
 import io.jsonwebtoken.Claims;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -12,33 +14,10 @@ import javax.annotation.PostConstruct;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.stream.Collectors;
 
-/**
- * Token 策略选择器
- * 
- * 职责：
- * 1. 实现 TokenGenerator 和 TokenValidator 接口
- * 2. 根据配置选择具体的策略实现
- * 3. 使用 @Primary 成为 Spring 自动注入的默认实现
- * 
- * 策略层级：
- * 第一层：选择大策略类型（JWT 或 SIMPLE）
- * - 根据 token.strategy.type 配置
- * - JWT: 使用 JWT 标准格式的策略
- * - SIMPLE: 使用简单自定义格式的策略
- * 
- * 第二层：选择 JWT 算法（仅当第一层选择 JWT 时）
- * - 根据 token.algorithm 配置
- * - RS256: 非对称加密，使用 RS256TokenGenerator/Validator
- * - HS256: 对称加密，使用 HS256TokenGenerator/Validator
- * - 备用: JwtTokenGenerator/JwtTokenValidator（通用实现）
- * 
- * 设计模式：
- * - 策略模式：封装不同的策略实现
- * - 委派模式：委派实际操作给选择的策略
- * - 适配器模式：统一策略接口
- */
 @Component
 @Primary
 public class TokenStrategySelector implements TokenGenerator, TokenValidator {
@@ -47,14 +26,24 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
 
     private final ApplicationContext applicationContext;
     private final TokenProperties tokenProperties;
+    private final TokenRevocationService revocationService;
+    private final TokenPerformanceMonitor performanceMonitor;
 
     private TokenGenerator selectedGenerator;
     private TokenValidator selectedValidator;
+    private final ReadWriteLock strategyLock = new ReentrantReadWriteLock();
+
+    private String currentStrategyType;
+    private String currentAlgorithm;
 
     public TokenStrategySelector(ApplicationContext applicationContext,
-                                   TokenProperties tokenProperties) {
+                                   TokenProperties tokenProperties,
+                                   TokenRevocationService revocationService,
+                                   TokenPerformanceMonitor performanceMonitor) {
         this.applicationContext = applicationContext;
         this.tokenProperties = tokenProperties;
+        this.revocationService = revocationService;
+        this.performanceMonitor = performanceMonitor;
     }
 
     @PostConstruct
@@ -66,43 +55,37 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
         
         log.info("配置 - 大策略类型: {}, JWT 算法: {}", strategyType, algorithm);
 
-        selectStrategies();
+        selectStrategies(strategyType, algorithm);
         
         log.info("策略选择完成 - Generator: {}, Validator: {}", 
                 selectedGenerator.getClass().getSimpleName(),
                 selectedValidator.getClass().getSimpleName());
     }
 
-    /**
-     * 选择策略实现
-     * 两层选择：
-     * 1. 先选大策略类型（JWT 或 SIMPLE）
-     * 2. 如果是 JWT，再选具体算法（RS256 或 HS256）
-     */
-    private void selectStrategies() {
-        String strategyType = tokenProperties.getStrategy().getType().toUpperCase();
+    private void selectStrategies(String strategyType, String algorithm) {
+        strategyLock.writeLock().lock();
+        try {
+            this.currentStrategyType = strategyType.toUpperCase();
+            this.currentAlgorithm = algorithm.toUpperCase();
 
-        // 第一层：选择大策略类型
-        if ("SIMPLE".equals(strategyType)) {
-            selectSimpleStrategy();
-        } else {
-            selectJwtStrategy();
+            if ("SIMPLE".equals(this.currentStrategyType)) {
+                selectSimpleStrategy();
+            } else {
+                selectJwtStrategy(this.currentAlgorithm);
+            }
+
+            validateSelection();
+        } finally {
+            strategyLock.writeLock().unlock();
         }
-
-        // 验证选择结果
-        validateSelection();
     }
 
-    /**
-     * 选择 SIMPLE 策略
-     */
     private void selectSimpleStrategy() {
         log.info("选择 SIMPLE 策略类型");
         
         List<TokenGenerator> generators = getAvailableGenerators();
         List<TokenValidator> validators = getAvailableValidators();
 
-        // 查找 SimpleTokenGenerator
         selectedGenerator = generators.stream()
                 .filter(g -> g.getClass().getSimpleName().contains("Simple"))
                 .findFirst()
@@ -111,7 +94,6 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
                     return generators.get(0);
                 });
 
-        // 查找 SimpleTokenValidator
         selectedValidator = validators.stream()
                 .filter(v -> v.getClass().getSimpleName().contains("Simple"))
                 .findFirst()
@@ -121,50 +103,37 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
                 });
     }
 
-    /**
-     * 选择 JWT 策略
-     * 根据 token.algorithm 选择具体的算法实现
-     */
-    private void selectJwtStrategy() {
-        String algorithm = tokenProperties.getAlgorithm().toUpperCase();
+    private void selectJwtStrategy(String algorithm) {
         log.info("选择 JWT 策略类型，算法: {}", algorithm);
 
         List<TokenGenerator> generators = getAvailableGenerators();
         List<TokenValidator> validators = getAvailableValidators();
 
-        // 第二层：根据算法选择具体的 JWT 实现
         if ("RS256".equals(algorithm)) {
             selectRs256Strategy(generators, validators);
         } else if ("HS256".equals(algorithm)) {
             selectHs256Strategy(generators, validators);
         } else {
-            // 未知算法，使用通用 JwtTokenGenerator
             log.warn("未知算法: {}，使用通用 JwtTokenGenerator", algorithm);
             selectGenericJwtStrategy(generators, validators);
         }
     }
 
-    /**
-     * 选择 RS256 非对称加密策略
-     */
     private void selectRs256Strategy(List<TokenGenerator> generators, 
                                        List<TokenValidator> validators) {
         log.info("尝试选择 RS256 非对称加密策略");
 
-        // 优先选择专用的 RS256TokenGenerator
         selectedGenerator = generators.stream()
                 .filter(g -> g.getClass().getSimpleName().startsWith("RS256"))
                 .findFirst()
                 .orElseGet(() -> {
                     log.warn("未找到 RS256TokenGenerator，尝试查找 JwtTokenGenerator");
-                    // 备用：选择通用的 JwtTokenGenerator（它内部使用 JwtKeyManager）
                     return generators.stream()
                             .filter(g -> g.getClass().getSimpleName().equals("JwtTokenGenerator"))
                             .findFirst()
                             .orElse(generators.get(0));
                 });
 
-        // 优先选择专用的 RS256TokenValidator
         selectedValidator = validators.stream()
                 .filter(v -> v.getClass().getSimpleName().startsWith("RS256"))
                 .findFirst()
@@ -177,27 +146,21 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
                 });
     }
 
-    /**
-     * 选择 HS256 对称加密策略
-     */
     private void selectHs256Strategy(List<TokenGenerator> generators, 
                                        List<TokenValidator> validators) {
         log.info("尝试选择 HS256 对称加密策略");
 
-        // 优先选择专用的 HS256TokenGenerator
         selectedGenerator = generators.stream()
                 .filter(g -> g.getClass().getSimpleName().startsWith("HS256"))
                 .findFirst()
                 .orElseGet(() -> {
                     log.warn("未找到 HS256TokenGenerator，尝试查找 JwtTokenGenerator");
-                    // 备用：选择通用的 JwtTokenGenerator
                     return generators.stream()
                             .filter(g -> g.getClass().getSimpleName().equals("JwtTokenGenerator"))
                             .findFirst()
                             .orElse(generators.get(0));
                 });
 
-        // 优先选择专用的 HS256TokenValidator
         selectedValidator = validators.stream()
                 .filter(v -> v.getClass().getSimpleName().startsWith("HS256"))
                 .findFirst()
@@ -210,9 +173,6 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
                 });
     }
 
-    /**
-     * 选择通用 JWT 策略（备用）
-     */
     private void selectGenericJwtStrategy(List<TokenGenerator> generators, 
                                             List<TokenValidator> validators) {
         log.info("选择通用 JWT 策略");
@@ -228,13 +188,9 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
                 .orElse(validators.get(0));
     }
 
-    /**
-     * 获取所有可用的 TokenGenerator（排除自身）
-     */
     private List<TokenGenerator> getAvailableGenerators() {
         List<TokenGenerator> result = new ArrayList<>();
         for (TokenGenerator generator : applicationContext.getBeansOfType(TokenGenerator.class).values()) {
-            // 排除自身，避免循环
             if (generator != this) {
                 result.add(generator);
             }
@@ -245,13 +201,9 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
         return result;
     }
 
-    /**
-     * 获取所有可用的 TokenValidator（排除自身）
-     */
     private List<TokenValidator> getAvailableValidators() {
         List<TokenValidator> result = new ArrayList<>();
         for (TokenValidator validator : applicationContext.getBeansOfType(TokenValidator.class).values()) {
-            // 排除自身，避免循环
             if (validator != this) {
                 result.add(validator);
             }
@@ -262,31 +214,83 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
         return result;
     }
 
-    /**
-     * 验证选择结果
-     */
     private void validateSelection() {
         if (selectedGenerator == null || selectedValidator == null) {
             log.error("策略选择失败！没有找到可用的策略实现");
             throw new IllegalStateException("无法选择 Token 策略，请检查配置");
         }
 
-        // 验证 Generator 和 Validator 是否匹配
         String genName = selectedGenerator.getClass().getSimpleName();
         String valName = selectedValidator.getClass().getSimpleName();
 
         log.info("策略选择验证通过 - Generator: {}, Validator: {}", genName, valName);
     }
 
-    // ==================== TokenGenerator 方法委派 ====================
+    public boolean switchStrategy(String strategyType, String algorithm) {
+        if (strategyType == null || strategyType.isEmpty()) {
+            log.warn("策略类型不能为空");
+            return false;
+        }
+
+        String upperType = strategyType.toUpperCase();
+        String upperAlgo = (algorithm != null) ? algorithm.toUpperCase() : "RS256";
+
+        if (!"JWT".equals(upperType) && !"SIMPLE".equals(upperType)) {
+            log.warn("不支持的策略类型: {}", strategyType);
+            return false;
+        }
+
+        log.info("运行时切换策略: type={}, algorithm={}", upperType, upperAlgo);
+
+        try {
+            selectStrategies(upperType, upperAlgo);
+            log.info("策略切换成功 - Generator: {}, Validator: {}", 
+                    selectedGenerator.getClass().getSimpleName(),
+                    selectedValidator.getClass().getSimpleName());
+            return true;
+        } catch (Exception e) {
+            log.error("策略切换失败: {}", e.getMessage(), e);
+            return false;
+        }
+    }
+
+    public String getCurrentStrategyType() {
+        strategyLock.readLock().lock();
+        try {
+            return currentStrategyType;
+        } finally {
+            strategyLock.readLock().unlock();
+        }
+    }
+
+    public String getCurrentAlgorithm() {
+        strategyLock.readLock().lock();
+        try {
+            return currentAlgorithm;
+        } finally {
+            strategyLock.readLock().unlock();
+        }
+    }
 
     @Override
     public TokenGenerationResult generate(String userId, String subject,
                                             LocalDateTime issuedAt, LocalDateTime expiresAt) {
+        long startTime = System.currentTimeMillis();
+        
         if (selectedGenerator == null) {
             throw new IllegalStateException("TokenGenerator 未初始化");
         }
-        return selectedGenerator.generate(userId, subject, issuedAt, expiresAt);
+        
+        try {
+            TokenGenerationResult result = selectedGenerator.generate(userId, subject, issuedAt, expiresAt);
+            long duration = System.currentTimeMillis() - startTime;
+            performanceMonitor.recordGenerate(selectedGenerator.getClass().getSimpleName(), duration);
+            return result;
+        } catch (Exception e) {
+            long duration = System.currentTimeMillis() - startTime;
+            performanceMonitor.recordGenerate(selectedGenerator.getClass().getSimpleName(), duration, true);
+            throw e;
+        }
     }
 
     @Override
@@ -297,14 +301,34 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
         return selectedGenerator.getAlgorithm();
     }
 
-    // ==================== TokenValidator 方法委派 ====================
-
     @Override
     public ValidationResult validate(String tokenValue) {
+        long startTime = System.currentTimeMillis();
+        
         if (selectedValidator == null) {
             throw new IllegalStateException("TokenValidator 未初始化");
         }
-        return selectedValidator.validate(tokenValue);
+
+        try {
+            Claims claims = selectedValidator.parseQuietly(tokenValue);
+            String jwtId = claims != null ? claims.getId() : null;
+
+            if (revocationService.isRevoked(jwtId, tokenValue)) {
+                long duration = System.currentTimeMillis() - startTime;
+                performanceMonitor.recordValidate(selectedValidator.getClass().getSimpleName(), duration);
+                log.debug("Token 已被吊销: jwtId={}", jwtId);
+                return ValidationResult.invalid(ValidationStatus.INVALID, "Token 已被吊销");
+            }
+
+            ValidationResult result = selectedValidator.validate(tokenValue);
+            long duration = System.currentTimeMillis() - startTime;
+            performanceMonitor.recordValidate(selectedValidator.getClass().getSimpleName(), duration);
+            return result;
+        } catch (Exception e) {
+            long duration = System.currentTimeMillis() - startTime;
+            performanceMonitor.recordValidate(selectedValidator.getClass().getSimpleName(), duration, true);
+            throw e;
+        }
     }
 
     @Override
@@ -331,18 +355,10 @@ public class TokenStrategySelector implements TokenGenerator, TokenValidator {
         return selectedValidator.extractJwtId(tokenValue);
     }
 
-    // ==================== 测试/调试方法 ====================
-
-    /**
-     * 获取当前选择的 Generator（用于测试/调试）
-     */
     public TokenGenerator getSelectedGenerator() {
         return selectedGenerator;
     }
 
-    /**
-     * 获取当前选择的 Validator（用于测试/调试）
-     */
     public TokenValidator getSelectedValidator() {
         return selectedValidator;
     }
