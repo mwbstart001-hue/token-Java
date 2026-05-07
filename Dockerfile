@@ -1,32 +1,26 @@
-FROM python:3.9-slim AS builder
+FROM maven:3.8.6-jdk-8 AS builder
 
 WORKDIR /app
 
-COPY requirements.txt .
-COPY app.py .
-COPY user.db ./
+COPY pom.xml .
+COPY src ./src
 
-RUN pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r requirements.txt
+RUN mvn clean package -DskipTests
 
-FROM python:3.9-slim
+FROM eclipse-temurin:8-jre
 
 WORKDIR /app
 
-RUN addgroup --system appgroup && adduser --system appuser --ingroup appgroup
+RUN groupadd -r appgroup && useradd -r -g appgroup appuser
 
-COPY --from=builder /app/wheels/*.whl ./
-COPY app.py .
-COPY user.db ./
-
-RUN pip install --no-cache *.whl && \
-    rm -rf *.whl
+COPY --from=builder /app/target/token-service-1.0.0.jar app.jar
 
 RUN chown -R appuser:appgroup /app
 
 USER appuser
 
-EXPOSE 8000
+EXPOSE 8080
 
-ENV PYTHONUNBUFFERED=1
+ENV JAVA_OPTS="-Xms256m -Xmx512m"
 
-ENTRYPOINT ["python", "app.py"]
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
